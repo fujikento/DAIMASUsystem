@@ -1,0 +1,22 @@
+{
+  "job_id": "img_4_1772133486",
+  "scene_id": 22,
+  "prompt": "俯瞰視点で湯屋の内部構造が透けて見える。鳥瞰図のように各階層に色とりどりの神々や妖怪の影がゆっくりと動き回る。朱色、金箔のゴールド、翡翠グリーン、深紫の豊かな色彩パレット。大浴場からは青白い湯気が立ち上り、光る花びらのようなパーティクルが螺旋状に舞う。左から右へゆっくりと流れる光の軌跡が神秘的な雰囲気を演出。Japanese ukiyo-e inspired、ultra detailed",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "unified",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772133513.025957
+}

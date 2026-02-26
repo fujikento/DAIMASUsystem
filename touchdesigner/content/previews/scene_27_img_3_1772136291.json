@@ -1,0 +1,22 @@
+{
+  "job_id": "img_3_1772136291",
+  "scene_id": 27,
+  "prompt": "再び、夜空を背景に油屋風の建物の全景が映し出される。上空からの視点 (top-down view)。建物全体が暖かな提灯の光で彩られ、窓からも柔らかな明かりが漏れている。屋根からは途切れることなく湯気が立ち上り、星が瞬く夜空へと溶けていく。幻想的で壮大な、この世ならざる楽園のような光景。magnificent fantasy bathhouse, countless glowing lanterns, dramatic steam plumes, sparkling night sky, warm golden light, awe-inspiring, top-down view, ultra detailed., inspired by the dish: 夜空の下、湯屋はひときわ輝きを増し、訪れる者たちを誘う。",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "zone",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772136317.5500622
+}

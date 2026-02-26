@@ -1,0 +1,22 @@
+{
+  "job_id": "img_5_1772132408",
+  "scene_id": 14,
+  "prompt": "路地の奥から視点が移動し、カウンターいっぱいに夜の油屋の全景が投影されます。重厚な木造建築が堂々とそびえ立ち、窓という窓から温かい黄金色の光が漏れ、まるで生きているかのように呼吸しているようです。屋根の上には青い炎がゆらめき、建物全体が無数の赤い提灯に囲まれて幻想的に揺れています。時折、窓辺を人影が横切り、活気を感じさせる動きが見えます。",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "unified",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772132436.777395
+}

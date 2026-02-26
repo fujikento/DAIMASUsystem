@@ -1,0 +1,22 @@
+{
+  "job_id": "img_2_1772129984",
+  "scene_id": 11,
+  "prompt": "千と千尋の神隠しでハクが千におにぎりを渡すシーン",
+  "provider": "imagen",
+  "model": "imagen-4.0-fast-generate-001",
+  "aspect_ratio": "21:9",
+  "projection_mode": "custom",
+  "target_zones": "1",
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772129987.828438
+}

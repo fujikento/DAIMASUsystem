@@ -1,0 +1,22 @@
+{
+  "job_id": "img_2_1772133485",
+  "scene_id": 26,
+  "prompt": "トップダウンビューで雲海の上を一匹の白い龍の光跡がゆっくりと螺旋を描きながら移動する。龍の軌跡は青白い光の帯となって残り、雲海は淡いピンクと金色に染まる夕暮れの色調。龍の通った後には小さな光の粒子が星のように輝き、全体が幻想的なパステルカラーで包まれる。雲のテクスチャは柔らかく、空間に奥行きがある。romantic lighting、dreamy atmosphere、soft focus effect",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "unified",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772133510.991356
+}

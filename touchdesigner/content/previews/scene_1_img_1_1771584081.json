@@ -1,0 +1,9 @@
+{
+  "job_id": "img_1_1771584081",
+  "scene_id": 1,
+  "prompt": "Ultra-wide panoramic top-down aerial view looking straight down, horizontal cinematic composition, no horizon line, designed for projection onto a long table surface, seamless horizontal flow, 21:9 ultrawide, 4K quality, Liquid gold flowing and forming elegant Art Deco patterns across the full width, diamond dust particles drifting horizontally, opulent luxury atmosphere, warm golden tones, amber lighting, dramatic low-key lighting, deep shadows, moody atmosphere, slow graceful movement, gentle flowing motion, cinematic depth of field",
+  "provider": "runway",
+  "aspect_ratio": "21:9",
+  "status": "placeholder",
+  "note": "APIキーを設定すると実際の画像が生成されます"
+}

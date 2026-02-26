@@ -1,0 +1,22 @@
+{
+  "job_id": "img_7_1771709380",
+  "scene_id": 9,
+  "prompt": "Ultra-wide panoramic top-down aerial view looking straight down, horizontal cinematic composition, no horizon line, designed for projection onto a long table surface, seamless horizontal flow, 21:9 ultrawide, 4K quality, Crystal clear ocean water with gentle waves flowing left to right, sunlight caustic patterns on sandy bottom, tropical fish schools swimming across the panorama",
+  "provider": "imagen",
+  "model": "imagen-4.0-fast-generate-001",
+  "aspect_ratio": "21:9",
+  "projection_mode": "unified",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1771709385.024981
+}

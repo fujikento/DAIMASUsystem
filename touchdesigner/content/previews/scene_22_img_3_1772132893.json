@@ -1,0 +1,22 @@
+{
+  "job_id": "img_3_1772132893",
+  "scene_id": 22,
+  "prompt": "鳥瞰図、21:9パノラマ。水上に連なる朱色の鳥居と苔むした石灯籠が奥へと続く道筋を描く。燃えるような朱色、深い水色、苔むした石の灰色、金色の鱗、淡い桜ピンクが織りなす色彩。水面は鏡のように空と灯籠の光を反射し、水中の鯉が優雅に泳ぐ。提灯の柔らかな光が水面を照らし、ゆっくりと舞い落ちる桜の花びらが水面に波紋を広げる。Japanese ukiyo-e inspired digital art, photorealistic water texture, cinematic lighting, ultra detailed.",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "unified",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772132926.056941
+}

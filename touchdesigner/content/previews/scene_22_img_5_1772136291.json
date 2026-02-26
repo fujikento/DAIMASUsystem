@@ -1,0 +1,22 @@
+{
+  "job_id": "img_5_1772136291",
+  "scene_id": 22,
+  "prompt": "前シーンの水面から、白く柔らかな湯気がゆっくりと立ち上り、カウンター全体を覆い始める。上空からの視点 (top-down view)。その湯気のベールの中から、日本家屋と西洋建築が融合したような、複雑な屋根と軒を持つ油屋風の建物がぼんやりと浮かび上がってくる。重厚な瓦の色合い、湯気で霞む赤い欄干がわずかに見える。dreamlike, soft focus, volumetric steam, traditional Japanese architecture meets fantastical elements, subtle glowing details, cinematic lighting., inspired by the dish: 湯気の向こうに、この世ならざる建物が、ゆらめきながら姿を現す。",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "zone",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772136317.229829
+}

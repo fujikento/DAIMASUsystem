@@ -1,0 +1,22 @@
+{
+  "job_id": "img_1_1772132407",
+  "scene_id": 13,
+  "prompt": "バーカウンター全体に、夕暮れの赤みを帯びた空と、その下に続く石畳の細い路地が映し出されます。軒先には赤い提灯がちらほらと灯り始め、薄暗い路地の奥には神秘的な鳥居や古いトンネルの入り口が見えます。風に揺れる提灯の影がゆっくりと左右に動き、異世界への誘いを感じさせます。地面には水たまりが反射し、さらに幻想的な奥行きを表現します。",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "unified",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772132438.4691432
+}

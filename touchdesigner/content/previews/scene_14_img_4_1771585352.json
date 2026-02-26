@@ -1,0 +1,10 @@
+{
+  "job_id": "img_4_1771585352",
+  "scene_id": 14,
+  "prompt": "Ultra-wide panoramic top-down aerial view looking straight down, horizontal cinematic composition, no horizon line, designed for projection onto a long table surface, seamless horizontal flow, 21:9 ultrawide, 4K quality, Grand chandelier crystals refracting rainbow light across the entire surface, ballroom elegance, Gatsby-era luxury panorama",
+  "provider": "gemini",
+  "model": "gemini-2.0-flash-exp-image-generation",
+  "aspect_ratio": "21:9",
+  "status": "complete",
+  "generated_at": 1771585359.1191092
+}

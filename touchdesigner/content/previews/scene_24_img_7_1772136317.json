@@ -1,0 +1,22 @@
+{
+  "job_id": "img_7_1772136317",
+  "scene_id": 24,
+  "prompt": "暗く、磨かれた油屋風の廊下の床が広がる。上空からの視点 (top-down view)。無数の小さな黒いススワタリたちが、光る金平糖を運びながら、ちょこまかと忙しく動き回る。彼らが通った後には、カラフルな金平糖がわずかに散らばり、星のようにきらめく。床には、古い木材の質感と、遠くの光源による淡い反射が見える。playful, whimsical, tiny soot sprites, sparkling konpeito, deep shadows, subtle light reflections, aged wooden floor texture, vivid colors., inspired by the dish: 床下からは、小さな働き者たちの賑やかな足音が響き渡る。",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "zone",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772136338.120619
+}

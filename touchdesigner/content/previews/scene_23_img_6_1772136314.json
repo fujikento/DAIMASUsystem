@@ -1,0 +1,22 @@
+{
+  "job_id": "img_6_1772136314",
+  "scene_id": 23,
+  "prompt": "油屋風の建物の屋根瓦の壮大なディテールがクローズアップされる。上空からの視点 (top-down view)。瓦の間からはまだ湯気が立ち上り、夜空に吸い込まれていく。建物の周囲には、鮮やかな赤やオレンジの提灯が多数吊るされ、暖かく幻想的な光を放っている。屋根の曲線美と提灯の光が織りなす、活気に満ちた景観。vibrant red and orange lanterns, intricate roof tiles, wisps of steam, dynamic lighting, traditional Japanese fantasy architecture, ultra detailed., inspired by the dish: 無数の提灯が灯り、活気に満ちた湯屋の営みが、静かに始まる。",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "zone",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772136349.10224
+}

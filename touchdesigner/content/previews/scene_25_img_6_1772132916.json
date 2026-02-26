@@ -1,0 +1,22 @@
+{
+  "job_id": "img_6_1772132916",
+  "scene_id": 25,
+  "prompt": "鳥瞰図、21:9パノラマ。宴の後の湯屋の静けさ。深い藍色、褪せた朱色、残り火の暖かなオレンジ、淡い灰色の煙、静かな水色が支配的な色彩。提灯の数は減り、その光は微かに揺らぐ。宴の名残として散らばる花びらや残された器が床に映る。湯気や煙がゆっくりと螺旋状に立ち上り、全体的に静かでゆったりとした動き。melancholic cinematic painting, volumetric smoke, delicate light, after-party atmosphere, top-down view, ultra detailed.",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "unified",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772132939.46788
+}

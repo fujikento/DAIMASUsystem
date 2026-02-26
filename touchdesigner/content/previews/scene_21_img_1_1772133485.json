@@ -1,0 +1,22 @@
+{
+  "job_id": "img_1_1772133485",
+  "scene_id": 21,
+  "prompt": "上空から見下ろした視点で、21:9パノラマ構図の中央に古い木造の湯屋建築が浮かび上がる。深い藍色の夜霧に包まれ、建物の輪郭が金色の光でゆっくりと描かれていく。瓦屋根からは温かみのある橙色の光が漏れ、木材のテクスチャが細かく表現される。四隅から中心に向かって霧がゆっくりと晴れ、建物周辺に小さな光の粒子がふわりと舞う。cinematic lighting、volumetric fog effect",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "unified",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772133524.267901
+}

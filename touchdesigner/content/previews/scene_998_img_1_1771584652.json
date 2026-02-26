@@ -1,0 +1,10 @@
+{
+  "job_id": "img_1_1771584652",
+  "scene_id": 998,
+  "prompt": "A beautiful zen garden with raked sand and stone lanterns",
+  "provider": "gemini",
+  "model": "gemini-2.0-flash-exp-image-generation",
+  "aspect_ratio": "21:9",
+  "status": "complete",
+  "generated_at": 1771584662.059219
+}

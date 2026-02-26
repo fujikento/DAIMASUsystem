@@ -1,0 +1,22 @@
+{
+  "job_id": "img_8_1772136317",
+  "scene_id": 25,
+  "prompt": "水面に覆われた沼の底に、錆びた一本の線路がまっすぐに延びている。上空からの視点 (top-down view)。水面は青みがかった透明感があり、遠くにはポツンと立つ、小さな銭婆風の一軒家が霞んで見える。空の光が水面に反射し、銀色の輝きを放つ。線路の枕木には苔が生え、時の流れを感じさせる。submerged train tracks, misty, tranquil water, distant quaint house silhouette, serene blue and grey palette, soft reflections of sky, mossy details on tracks, cinematic., inspired by the dish: 水面の旅路は果てしなく、静寂の中、遠くの家へと続く。",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "zone",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772136343.182058
+}

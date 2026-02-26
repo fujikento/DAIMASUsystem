@@ -1,0 +1,21 @@
+{
+  "job_id": "img_3_1771593028",
+  "scene_id": 3,
+  "prompt": "Ultra-wide panoramic top-down aerial view looking straight down, horizontal cinematic composition, no horizon line, designed for projection onto a long table surface, seamless horizontal flow, 21:9 ultrawide, 4K quality, Treasure cascading across the surface, golden light spreading from center to edges, jewels and coins flowing horizontally, rich warm tones",
+  "provider": "gemini",
+  "model": "gemini-2.0-flash-exp-image-generation",
+  "aspect_ratio": "21:9",
+  "projection_mode": "unified",
+  "target_zones": null,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1771593037.981367
+}

@@ -1,0 +1,10 @@
+{
+  "job_id": "img_2_1771585330",
+  "scene_id": 12,
+  "prompt": "Ultra-wide panoramic top-down aerial view looking straight down, horizontal cinematic composition, no horizon line, designed for projection onto a long table surface, seamless horizontal flow, 21:9 ultrawide, 4K quality, Champagne bubbles rising in golden light across the panorama, crystal reflections, Art Deco geometric patterns forming and connecting horizontally",
+  "provider": "gemini",
+  "model": "gemini-2.0-flash-exp-image-generation",
+  "aspect_ratio": "21:9",
+  "status": "complete",
+  "generated_at": 1771585339.9053812
+}

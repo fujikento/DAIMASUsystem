@@ -1,0 +1,22 @@
+{
+  "job_id": "img_4_1772132893",
+  "scene_id": 23,
+  "prompt": "トップダウンビュー、21:9パノラマ。濃密な青紫色の霧の中から、複雑に組み上げられた巨大な木造の湯屋が姿を現す。墨色、深い朱色、提灯の暖かな橙色、湿った木材の茶色がメインの色彩。無数に灯る提灯の光が霧の中で拡散し、湯屋の屋根や階層構造を浮かび上がらせる。霧は奥から手前へゆっくりと流れ、湿った木材のテクスチャが感じられる。volumetric fog, ethereal light, architectural detail, cinematic digital painting, ultra detailed.",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "unified",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772132916.899776
+}

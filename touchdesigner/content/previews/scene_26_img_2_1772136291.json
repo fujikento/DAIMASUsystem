@@ -1,0 +1,22 @@
+{
+  "job_id": "img_2_1772136291",
+  "scene_id": 26,
+  "prompt": "穏やかな水面を、黒いシルエットの舟がゆっくりと進んでいく。上空からの視点 (top-down view)。舟の上には、様々な姿形をした神々のような影が乗り、厳かな雰囲気を醸し出す。舟の先端には赤い提灯が灯り、水面に揺らめく光の筋を描く。水面は深く、静かで、舟の通過によってわずかな波紋が広がる。ceremonial boat, mysterious gods' silhouettes, deep dark water, shimmering red lantern reflections, subtle wake, peaceful, spiritual atmosphere, top-down view., inspired by the dish: 八百万の神々を乗せた舟は、静かに水面を滑り、見えない世界へと向かう。",
+  "provider": "gemini_pro",
+  "model": "gemini-3-pro-image-preview",
+  "aspect_ratio": "21:9",
+  "projection_mode": "zone",
+  "target_zones": null,
+  "preview_only": true,
+  "target_dimensions": {
+    "width": 5520,
+    "height": 1200,
+    "aspect_ratio_float": 4.6
+  },
+  "table_physical_mm": {
+    "width": 8120,
+    "height": 600
+  },
+  "status": "complete",
+  "generated_at": 1772136318.219109
+}
