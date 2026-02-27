@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+:root {
+  --background: #080f1a;
+  --foreground: #fafafa;
+  --card: #0e1d32;
+  --card-border: rgba(96, 165, 250, 0.10);
+  --input: #132040;
+  --accent: #2563eb;
+  --accent-hover: #3b82f6;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(96, 165, 250, 0.15);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(96, 165, 250, 0.28);
+}
+
+/* Select styling for navy theme */
+select option {
+  background: #132040;
+  color: #fafafa;
+}
+
+/* Focus ring */
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+}

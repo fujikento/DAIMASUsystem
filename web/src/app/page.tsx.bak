@@ -1,0 +1,231 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import {
+  Play,
+  Pause,
+  Square,
+  Cake,
+  Clock,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
+import {
+  getProjectionStatus,
+  playProjection,
+  pauseProjection,
+  stopProjection,
+  createProjectionWebSocket,
+  type ProjectionStatus,
+  type Birthday,
+  fetchBirthdays,
+} from "@/lib/api";
+import { getTodayTheme, type DayTheme } from "@/lib/themes";
+
+export default function Dashboard() {
+  const [status, setStatus] = useState<ProjectionStatus | null>(null);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [todayBirthdays, setTodayBirthdays] = useState<Birthday[]>([]);
+  const [theme, setTheme] = useState<DayTheme>(getTodayTheme());
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setTheme(getTodayTheme());
+
+    getProjectionStatus()
+      .then(setStatus)
+      .catch(() => {});
+
+    fetchBirthdays()
+      .then((all) => {
+        const today = new Date().toISOString().split("T")[0];
+        setTodayBirthdays(all.filter((b) => b.reservation_date === today));
+      })
+      .catch(() => {});
+
+    let ws: WebSocket | null = null;
+    try {
+      ws = createProjectionWebSocket((s) => {
+        setStatus(s);
+        setWsConnected(true);
+      });
+      ws.onopen = () => setWsConnected(true);
+      ws.onclose = () => setWsConnected(false);
+      ws.onerror = () => {
+        setWsConnected(false);
+        ws?.close();
+      };
+    } catch {
+      setWsConnected(false);
+    }
+
+    return () => {
+      ws?.close();
+    };
+  }, []);
+
+  const handlePlay = async () => {
+    setLoading(true);
+    try {
+      const s = await playProjection(1);
+      setStatus(s);
+    } catch {}
+    setLoading(false);
+  };
+
+  const handlePause = async () => {
+    setLoading(true);
+    try {
+      const s = await pauseProjection();
+      setStatus(s);
+    } catch {}
+    setLoading(false);
+  };
+
+  const handleStop = async () => {
+    setLoading(true);
+    try {
+      const s = await stopProjection();
+      setStatus(s);
+    } catch {}
+    setLoading(false);
+  };
+
+  const stateLabel = status?.state === "playing" ? "再生中" : status?.state === "paused" ? "一時停止" : "待機中";
+  const stateColor = status?.state === "playing" ? "text-green-400" : status?.state === "paused" ? "text-yellow-400" : "text-slate-500";
+
+  return (
+    <div className="space-y-8">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold">ダッシュボード</h2>
+          <p className="text-slate-500 mt-1">投影システム概要</p>
+        </div>
+        <div className="flex items-center gap-2 text-sm">
+          {wsConnected ? (
+            <span className="flex items-center gap-1 text-green-400">
+              <Wifi size={14} /> 接続中
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 text-slate-600">
+              <WifiOff size={14} /> 未接続
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Today's Theme */}
+      <div
+        className={`rounded-2xl p-8 bg-gradient-to-r ${theme.bgGradient} border border-slate-800`}
+      >
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-slate-400 text-sm">{theme.dayJa}のテーマ</p>
+            <h3 className="text-3xl font-bold mt-2" style={{ color: theme.color }}>
+              {theme.icon} {theme.nameJa}
+            </h3>
+          </div>
+          <div className="text-6xl opacity-20">{theme.icon}</div>
+        </div>
+      </div>
+
+      {/* Status & Controls */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-slate-900 rounded-xl p-6 border border-slate-800">
+          <h3 className="text-sm font-medium text-slate-500 uppercase tracking-wider mb-4">
+            投影ステータス
+          </h3>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400">状態</span>
+              <span className={`font-bold text-lg ${stateColor}`}>{stateLabel}</span>
+            </div>
+            {status?.elapsed !== undefined && status.elapsed > 0 && (
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">経過時間</span>
+                <span className="font-mono text-slate-200">
+                  {Math.floor(status.elapsed / 60)}:{String(Math.floor(status.elapsed % 60)).padStart(2, "0")}
+                </span>
+              </div>
+            )}
+          </div>
+          <div className="flex gap-3 mt-6">
+            <button
+              onClick={handlePlay}
+              disabled={loading || status?.state === "playing"}
+              className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg bg-green-600 hover:bg-green-500 disabled:opacity-40 transition-colors font-medium"
+            >
+              <Play size={18} /> 再生
+            </button>
+            <button
+              onClick={handlePause}
+              disabled={loading || status?.state !== "playing"}
+              className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg bg-yellow-600 hover:bg-yellow-500 disabled:opacity-40 transition-colors font-medium"
+            >
+              <Pause size={18} /> 一時停止
+            </button>
+            <button
+              onClick={handleStop}
+              disabled={loading || status?.state === "idle"}
+              className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-40 transition-colors font-medium"
+            >
+              <Square size={18} /> 停止
+            </button>
+          </div>
+        </div>
+
+        <div className="bg-slate-900 rounded-xl p-6 border border-slate-800">
+          <h3 className="text-sm font-medium text-slate-500 uppercase tracking-wider mb-4">
+            <Cake size={14} className="inline mr-2" />
+            本日の誕生日予約
+          </h3>
+          {todayBirthdays.length === 0 ? (
+            <p className="text-slate-600 text-sm">本日の誕生日予約はありません</p>
+          ) : (
+            <ul className="space-y-3">
+              {todayBirthdays.map((b) => (
+                <li key={b.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-800/50">
+                  <div>
+                    <span className="font-medium">{b.guest_name}</span>
+                    <span className="text-slate-500 text-sm ml-2">様</span>
+                  </div>
+                  <span
+                    className={`text-xs px-2 py-1 rounded-full ${
+                      b.status === "ready"
+                        ? "bg-green-500/20 text-green-400"
+                        : b.status === "processing"
+                        ? "bg-yellow-500/20 text-yellow-400"
+                        : "bg-blue-500/20 text-blue-400"
+                    }`}
+                  >
+                    {b.status === "ready" ? "準備完了" : b.status === "processing" ? "生成中" : "待機中"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4">
+        <div className="bg-slate-900 rounded-xl p-5 border border-slate-800">
+          <Clock size={20} className="text-amber-400 mb-3" />
+          <p className="text-slate-500 text-xs uppercase">タイムライン</p>
+          <p className="text-2xl font-bold mt-1">7</p>
+          <p className="text-slate-600 text-xs mt-1">曜日テーマ x 7</p>
+        </div>
+        <div className="bg-slate-900 rounded-xl p-5 border border-slate-800">
+          <Cake size={20} className="text-pink-400 mb-3" />
+          <p className="text-slate-500 text-xs uppercase">本日の予約</p>
+          <p className="text-2xl font-bold mt-1">{todayBirthdays.length}</p>
+          <p className="text-slate-600 text-xs mt-1">件</p>
+        </div>
+        <div className="bg-slate-900 rounded-xl p-5 border border-slate-800">
+          <div className="w-5 h-5 rounded-full mb-3" style={{ backgroundColor: theme.color }} />
+          <p className="text-slate-500 text-xs uppercase">テーマカラー</p>
+          <p className="text-lg font-bold mt-1" style={{ color: theme.color }}>{theme.color}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
