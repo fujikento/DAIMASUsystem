@@ -96,6 +96,10 @@ def init_db():
         _add_column_if_missing(conn, "storyboard_scenes", "mood", "VARCHAR")
         _add_column_if_missing(conn, "storyboard_scenes", "camera_angle", "VARCHAR")
 
+        # storyboards: style_reference / style_seed for fal.ai consistency
+        _add_column_if_missing(conn, "storyboards", "style_reference_path", "TEXT")
+        _add_column_if_missing(conn, "storyboards", "style_seed", "INTEGER")
+
         # storyboards: day_of_week / theme を nullable にする
         # SQLiteは既存カラムのNOT NULL制約を変更できないため、テーブル再作成で対応
         try:

@@ -13,6 +13,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 DEFAULT_SETTINGS = [
     {"key": "ANTHROPIC_API_KEY", "label": "Anthropic Claude API Key (台本AI生成)", "category": "api_keys", "is_secret": True},
     {"key": "GEMINI_API_KEY", "label": "Gemini API Key (Nano Banana)", "category": "api_keys", "is_secret": True},
+    {"key": "FAL_API_KEY", "label": "fal.ai API Key (Flux Pro + Kling Video)", "category": "api_keys", "is_secret": True},
     {"key": "RUNWAY_API_KEY", "label": "Runway Gen-4.5 API Key", "category": "api_keys", "is_secret": True},
     {"key": "KLING_API_KEY", "label": "Kling 2.6 API Key", "category": "api_keys", "is_secret": True},
     {"key": "PIKA_API_KEY", "label": "Pika 2.5 API Key", "category": "api_keys", "is_secret": True},

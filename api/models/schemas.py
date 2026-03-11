@@ -335,6 +335,8 @@ class Storyboard(Base):
     provider = Column(String, nullable=False, default="runway")
     status = Column(String, nullable=False, default="draft")
     # Status: draft → script_ready → images_generating → images_ready → video_generating → video_ready
+    style_reference_path = Column(Text, nullable=True)    # Style reference image path for fal.ai
+    style_seed = Column(Integer, nullable=True)           # Seed for style consistency across scenes
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -626,6 +628,7 @@ class StoryboardCreate(BaseModel):
     theme: Optional[str] = None          # Optional — may be set per-scene
     provider: str = "runway"
     auto_generate_scenes: bool = False   # Default: empty storyboard
+    style_seed: Optional[int] = None     # Seed for style consistency across scenes
 
 
 class StoryboardResponse(BaseModel):
@@ -636,6 +639,8 @@ class StoryboardResponse(BaseModel):
     mode: str
     provider: str
     status: str
+    style_reference_path: Optional[str] = None
+    style_seed: Optional[int] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     scenes: list[StoryboardSceneResponse] = []
@@ -650,6 +655,7 @@ class StoryboardListResponse(BaseModel):
     mode: str
     provider: str
     status: str
+    style_seed: Optional[int] = None
     created_at: datetime
     model_config = {"from_attributes": True}
 

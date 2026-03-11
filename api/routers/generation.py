@@ -58,7 +58,7 @@ class VideoGenerateRequest(BaseModel):
     theme: str
     course: str
     mode: str = "unified"          # unified / zone
-    provider: str = "runway"       # runway / kling / pika
+    provider: str = "runway"       # runway / fal / kling / pika
     zone_id: Optional[int] = None  # zone modeの場合 1-4
 
 
@@ -143,7 +143,7 @@ def list_themes(db: Session = Depends(get_db)):
         "themes": list(THEME_PROMPTS.keys()),
         "courses": COURSE_ORDER,
         "modes": ["unified", "zone"],
-        "providers": ["runway", "kling", "pika"],
+        "providers": ["runway", "fal", "kling", "pika"],
         "day_to_theme": DAY_TO_THEME,
         "table_spec": {
             "full_width": full_width,

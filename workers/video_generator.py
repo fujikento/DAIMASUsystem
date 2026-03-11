@@ -41,6 +41,7 @@ class GenerationStatus(str, Enum):
 
 class VideoProvider(str, Enum):
     RUNWAY = "runway"
+    FAL = "fal"       # fal.ai Kling Video v2.1 (image-to-video)
     KLING = "kling"
     PIKA = "pika"
 
@@ -390,6 +391,7 @@ class VideoGeneratorService:
         self._job_counter = 0
 
         self.runway_api_key = _get_api_key("RUNWAY_API_KEY")
+        self.fal_api_key = _get_api_key("FAL_API_KEY")
         self.kling_api_key = _get_api_key("KLING_API_KEY")
 
     def create_job(
@@ -458,6 +460,8 @@ class VideoGeneratorService:
         try:
             if job.provider == VideoProvider.RUNWAY:
                 await self._generate_runway(job)
+            elif job.provider == VideoProvider.FAL:
+                await self._generate_fal(job)
             elif job.provider == VideoProvider.KLING:
                 await self._generate_kling(job)
             elif job.provider == VideoProvider.PIKA:
@@ -660,6 +664,106 @@ class VideoGeneratorService:
             print(f"[VideoGen] Failed to read seed image: {e}")
             return None
 
+    async def _generate_fal(self, job: GenerationJob):
+        """fal.ai Kling Video v2.1 — image-to-video generation.
+
+        プレビュー画像をシード画像として使い、fal.ai の Kling Video v2.1 モデルで
+        動画を生成する。シード画像が見つからない場合はプレースホルダを作成。
+
+        Flow:
+        1. シード画像を検索（storyboard プレビューまたは explicit パス）。
+        2. fal_client.subscribe() で I2V 生成を実行。
+        3. 返された URL から動画をダウンロード。
+        4. output_path に保存。
+        5. メタデータを保存。
+        """
+        # Re-fetch key in case it was saved via Settings UI after init
+        api_key = _get_api_key("FAL_API_KEY") or self.fal_api_key
+        if not api_key:
+            print("[VideoGen] FAL_API_KEY is not configured. Creating placeholder.")
+            await self._create_placeholder(job)
+            return
+
+        try:
+            import fal_client
+        except ImportError:
+            print("[VideoGen] fal-client SDK not installed. Run: pip install fal-client")
+            await self._create_placeholder(job)
+            return
+
+        # Set the API key for fal_client
+        os.environ["FAL_KEY"] = api_key
+
+        # Find seed image for image-to-video
+        seed_image_b64 = await self._find_seed_image(job)
+        if not seed_image_b64:
+            print("[VideoGen] fal.ai I2V requires a seed image. No seed found, creating placeholder.")
+            await self._create_placeholder(job)
+            return
+
+        model = "fal-ai/kling-video/v2.1/standard/image-to-video"
+
+        # Map aspect ratio for Kling — supports 16:9, 9:16, 1:1
+        fal_aspect = "16:9"
+        if job.aspect_ratio == "1:1":
+            fal_aspect = "1:1"
+        elif job.aspect_ratio == "9:16":
+            fal_aspect = "9:16"
+
+        # Duration: Kling accepts "5" or "10" as string
+        duration_str = "5" if job.duration_seconds <= 5 else "10"
+
+        image_data_uri = f"data:image/jpeg;base64,{seed_image_b64}"
+
+        fal_args = {
+            "prompt": job.prompt,
+            "image_url": image_data_uri,
+            "duration": duration_str,
+            "aspect_ratio": fal_aspect,
+        }
+
+        print(f"[VideoGen] fal.ai model: {model}")
+        print(f"[VideoGen] fal.ai I2V mode | aspect={fal_aspect} | duration={duration_str}s")
+
+        loop = asyncio.get_running_loop()
+
+        def _call_api():
+            return fal_client.subscribe(model, arguments=fal_args)
+
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, _call_api),
+                timeout=300.0,  # Video generation can take a while
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError("fal.ai video generation timed out after 300 seconds")
+
+        # Extract video URL from result
+        video_data = result.get("video")
+        if not video_data or not video_data.get("url"):
+            raise RuntimeError("fal.ai returned no video in the response")
+        video_url = video_data["url"]
+
+        # Download the video
+        import urllib.request
+        Path(job.output_path).parent.mkdir(parents=True, exist_ok=True)
+
+        def _download():
+            req = urllib.request.Request(video_url)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.read()
+
+        video_bytes = await loop.run_in_executor(None, _download)
+
+        with open(job.output_path, "wb") as f:
+            f.write(video_bytes)
+
+        video_size_mb = len(video_bytes) / (1024 * 1024)
+        print(f"[VideoGen] fal.ai video saved: {job.output_path} ({video_size_mb:.1f}MB)")
+
+        # Save metadata alongside the video
+        self._save_video_metadata(job, model, seed_image=True)
+
     def _save_video_metadata(
         self,
         job: GenerationJob,
@@ -830,13 +934,13 @@ if __name__ == '__main__':
     gen_parser.add_argument("--course", required=True, choices=COURSE_ORDER)
     gen_parser.add_argument("--mode", default="unified", choices=["unified", "zone"])
     gen_parser.add_argument("--zone", type=int, default=0, help="区画番号 1-4 (zone mode)")
-    gen_parser.add_argument("--provider", default="runway", choices=["runway", "kling", "pika"])
+    gen_parser.add_argument("--provider", default="runway", choices=["runway", "fal", "kling", "pika"])
 
     # バッチ生成
     batch_parser = subparsers.add_parser("batch", help="テーマ一括生成")
     batch_parser.add_argument("--day", required=True, choices=list(DAY_TO_THEME.keys()))
     batch_parser.add_argument("--mode", default="unified", choices=["unified", "zone"])
-    batch_parser.add_argument("--provider", default="runway", choices=["runway", "kling", "pika"])
+    batch_parser.add_argument("--provider", default="runway", choices=["runway", "fal", "kling", "pika"])
 
     # 全テーマ
     all_parser = subparsers.add_parser("all", help="全テーマ一括生成")

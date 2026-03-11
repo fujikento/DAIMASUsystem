@@ -123,7 +123,8 @@ class ImageProvider(str, Enum):
     GEMINI_PRO = "gemini_pro"   # Nano Banana Pro (Gemini 3 Pro Image) - higher quality
     IMAGEN = "imagen"           # Imagen 4 Fast - fastest (3-5s)
     IMAGEN_FAST = "imagen_fast" # Alias for Imagen 4 Fast
-    FLUX = "flux"               # Flux Pro (placeholder)
+    FAL = "fal"                 # fal.ai Flux Pro v1.1 Ultra
+    FLUX = "flux"               # Flux Pro (placeholder - legacy)
     RUNWAY = "runway"           # Runway (placeholder)
 
 
@@ -157,6 +158,7 @@ class ImageGenerationJob:
     target_zones: Optional[str] = None
     mood: Optional[str] = None         # calm/dramatic/mysterious/festive/romantic/epic
     camera_angle: Optional[str] = None  # bird_eye/wide/close_up/pan/dynamic
+    style_seed: Optional[int] = None   # Seed for fal.ai style consistency across scenes
     created_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
     preview_only: bool = True
@@ -260,6 +262,7 @@ class ImageGeneratorService:
         self._job_counter = 0
 
         self.gemini_api_key = _get_api_key("GEMINI_API_KEY")
+        self.fal_api_key = _get_api_key("FAL_API_KEY")
         self.flux_api_key = _get_api_key("FLUX_API_KEY")
         self.runway_api_key = _get_api_key("RUNWAY_API_KEY")
 
@@ -310,6 +313,7 @@ class ImageGeneratorService:
         target_zones: Optional[str] = None,
         mood: Optional[str] = None,
         camera_angle: Optional[str] = None,
+        style_seed: Optional[int] = None,
         preview_only: bool = True,
     ) -> ImageGenerationJob:
         """画像生成ジョブを作成"""
@@ -333,6 +337,7 @@ class ImageGeneratorService:
             target_zones=target_zones,
             mood=mood,
             camera_angle=camera_angle,
+            style_seed=style_seed,
             preview_only=preview_only,
         )
         self.jobs[job_id] = job
@@ -352,6 +357,8 @@ class ImageGeneratorService:
                 await self._generate_gemini_pro(job)
             elif job.provider in (ImageProvider.IMAGEN, ImageProvider.IMAGEN_FAST):
                 await self._generate_imagen(job)
+            elif job.provider == ImageProvider.FAL:
+                await self._generate_fal(job)
             elif job.provider == ImageProvider.FLUX:
                 await self._generate_flux(job)
             elif job.provider == ImageProvider.RUNWAY:
@@ -1226,6 +1233,142 @@ class ImageGeneratorService:
         print(
             f"[TIMING] scene={job.scene_id} IMAGEN DONE | "
             f"api={t_api*1000:.0f}ms | extract={t_extract*1000:.1f}ms | "
+            f"save+meta={t_save*1000:.0f}ms | "
+            f"TOTAL={t_total*1000:.0f}ms | img={img_size_kb:.0f}KB"
+        )
+
+    async def _generate_fal(self, job: ImageGenerationJob):
+        """fal.ai Flux Pro v1.1 Ultra -- 高品質画像生成
+
+        fal-client Python SDK を使用して fal.ai の Flux Pro v1.1 Ultra モデルで
+        画像を生成する。任意のアスペクト比（21:9 ウルトラワイド含む）をサポート。
+        seed パラメータによるスタイル一貫性にも対応。
+
+        Flow:
+        1. fal_client.subscribe() で同期的に画像生成を実行。
+        2. 返された URL から画像をダウンロード。
+        3. _postprocess_from_pil で物理テーブル寸法に変換。
+        4. メタデータを保存。
+        """
+        import time as _t
+        t_total_start = _t.monotonic()
+
+        # Re-fetch key in case it was saved via Settings UI after init
+        api_key = _get_api_key("FAL_API_KEY") or self.fal_api_key
+        if not api_key:
+            print("[ImageGen] FAL_API_KEY is not configured. Creating placeholder.")
+            await self._create_placeholder(job)
+            return
+
+        try:
+            import fal_client
+        except ImportError:
+            print("[ImageGen] fal-client SDK not installed. Run: pip install fal-client")
+            await self._create_placeholder(job)
+            return
+
+        # Set the API key for fal_client
+        os.environ["FAL_KEY"] = api_key
+
+        model = "fal-ai/flux-pro/v1.1-ultra"
+
+        # Determine target resolution for generation request
+        if job.projection_mode == "zone":
+            gen_w, gen_h = TABLE_ZONE_WIDTH, TABLE_FULL_HEIGHT  # 1380x1200
+        elif job.projection_mode == "custom" and job.target_zones:
+            zone_count = len([z for z in job.target_zones.split(",") if z.strip()])
+            gen_w = TABLE_ZONE_WIDTH * zone_count
+            gen_h = TABLE_FULL_HEIGHT
+        elif job.projection_mode == "seat":
+            gen_w, gen_h = TABLE_SEAT_WIDTH, TABLE_FULL_HEIGHT  # 690x1200
+        else:
+            # unified — request at a size the model supports well
+            gen_w, gen_h = 2688, 576  # ~4.67:1 (close to 5520/1200=4.6:1)
+
+        prompt = self._build_aspect_prompt(
+            job.prompt, job.aspect_ratio, job.projection_mode, job.target_zones,
+            mood=job.mood, camera_angle=job.camera_angle,
+        )
+
+        print(f"[ImageGen] fal.ai model: {model}")
+        print(f"[ImageGen] fal.ai request size: {gen_w}x{gen_h}")
+
+        # Build arguments for fal.ai API
+        fal_args: dict = {
+            "prompt": prompt,
+            "image_size": {"width": gen_w, "height": gen_h},
+            "num_images": 1,
+            "enable_safety_checker": False,
+        }
+
+        # Use style_seed for consistency if set on the job
+        if job.style_seed is not None:
+            fal_args["seed"] = job.style_seed
+
+        # Run the synchronous fal_client call in a thread pool
+        loop = asyncio.get_running_loop()
+
+        def _call_api():
+            return fal_client.subscribe(model, arguments=fal_args)
+
+        t0 = _t.monotonic()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(_API_THREAD_POOL, _call_api),
+                timeout=120.0,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError("fal.ai API call timed out after 120 seconds")
+        t_api = _t.monotonic() - t0
+
+        # Extract image URL from result
+        images = result.get("images", [])
+        if not images:
+            raise RuntimeError("fal.ai returned no images in the response")
+        image_url = images[0]["url"]
+
+        # Download the image
+        import urllib.request
+        t0 = _t.monotonic()
+
+        def _download():
+            req = urllib.request.Request(image_url)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.read()
+
+        image_bytes = await loop.run_in_executor(_API_THREAD_POOL, _download)
+        t_download = _t.monotonic() - t0
+
+        output = Path(job.output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        # Post-process and save metadata in parallel
+        t0 = _t.monotonic()
+        pil_image = _PILImage.open(io.BytesIO(image_bytes))
+
+        postprocess_future = loop.run_in_executor(
+            _API_THREAD_POOL,
+            functools.partial(
+                self._postprocess_from_pil,
+                pil_image,
+                job.output_path,
+                job.aspect_ratio,
+                job.projection_mode,
+                job.target_zones,
+            ),
+        )
+        metadata_future = loop.run_in_executor(
+            _API_THREAD_POOL,
+            functools.partial(self._save_metadata, job, model),
+        )
+        await asyncio.gather(postprocess_future, metadata_future)
+        t_save = _t.monotonic() - t0
+
+        t_total = _t.monotonic() - t_total_start
+        img_size_kb = len(image_bytes) / 1024
+        print(
+            f"[TIMING] scene={job.scene_id} FAL DONE | "
+            f"api={t_api*1000:.0f}ms | download={t_download*1000:.0f}ms | "
             f"save+meta={t_save*1000:.0f}ms | "
             f"TOTAL={t_total*1000:.0f}ms | img={img_size_kb:.0f}KB"
         )

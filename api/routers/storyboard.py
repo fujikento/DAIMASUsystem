@@ -10,7 +10,7 @@ import os
 import sys
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy import func
@@ -255,6 +255,7 @@ def create_storyboard(data: StoryboardCreate, db: Session = Depends(get_db)):
         mode="unified",
         provider=data.provider,
         status="draft",
+        style_seed=data.style_seed,
     )
     db.add(storyboard)
     db.flush()  # IDを確定させる
@@ -374,6 +375,7 @@ class StoryboardUpdate(PydanticBaseModel):
     theme: Optional[str] = None
     provider: Optional[str] = None
     title: Optional[str] = None
+    style_seed: Optional[int] = None
 
 
 @router.patch("/{storyboard_id}", response_model=StoryboardResponse)
@@ -400,9 +402,55 @@ def update_storyboard(storyboard_id: int, data: StoryboardUpdate, db: Session = 
     if data.title is not None:
         sb.title = data.title
 
+    if data.style_seed is not None:
+        sb.style_seed = data.style_seed
+
     db.commit()
     db.refresh(sb)
     return sb
+
+
+@router.post("/{storyboard_id}/style-reference")
+async def upload_style_reference(
+    storyboard_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """スタイルリファレンス画像をアップロードし、ストーリーボードに紐付ける
+
+    fal.ai プロバイダーで画像生成する際、このリファレンス画像のスタイルを
+    参考にして一貫性のあるビジュアルを生成する。
+    """
+    sb = db.query(Storyboard).filter(Storyboard.id == storyboard_id).first()
+    if not sb:
+        raise HTTPException(404, "ストーリーボードが見つかりません")
+
+    # Validate file type
+    if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(400, "JPEG、PNG、または WebP 画像のみアップロード可能です")
+
+    # Save to uploads directory
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    upload_dir = os.path.join(project_root, "api", "uploads", "style_references")
+    os.makedirs(upload_dir, exist_ok=True)
+
+    ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "jpg"
+    filename = f"style_ref_{storyboard_id}.{ext}"
+    file_path = os.path.join(upload_dir, filename)
+
+    content = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    sb.style_reference_path = file_path
+    db.commit()
+    db.refresh(sb)
+
+    return {
+        "ok": True,
+        "style_reference_path": file_path,
+        "file_size_kb": round(len(content) / 1024, 1),
+    }
 
 
 @router.delete("/{storyboard_id}")
@@ -960,6 +1008,9 @@ async def generate_images(
     if not pending_scenes:
         raise HTTPException(400, "生成対象のペンディングシーンがありません")
 
+    # Capture storyboard-level style_seed for fal.ai consistency
+    storyboard_style_seed = sb.style_seed
+
     # ジョブ情報をシリアライズ可能な形式で保存
     scene_data = [
         {
@@ -977,6 +1028,7 @@ async def generate_images(
             "brightness": s.brightness or "normal",
             "animation_speed": s.animation_speed or "normal",
             "prompt_modifier": s.prompt_modifier,
+            "style_seed": storyboard_style_seed,
         }
         for s in pending_scenes
     ]
@@ -1076,6 +1128,7 @@ async def generate_images(
                 target_zones=scene_info.get("target_zones"),
                 mood=scene_info.get("mood"),
                 camera_angle=scene_info.get("camera_angle"),
+                style_seed=scene_info.get("style_seed"),
             )
             # Run image generation BEFORE opening a DB session (Change 7)
             await _image_service.generate(img_job)
@@ -1274,6 +1327,9 @@ async def generate_single_image(
     except ValueError:
         provider = ImageProvider.IMAGEN
 
+    # Fetch storyboard-level style_seed
+    sb = db.query(Storyboard).filter(Storyboard.id == storyboard_id).first()
+
     scene.image_status = "generating"
     db.commit()
 
@@ -1292,6 +1348,7 @@ async def generate_single_image(
         "brightness": scene.brightness or "normal",
         "animation_speed": scene.animation_speed or "normal",
         "prompt_modifier": scene.prompt_modifier,
+        "style_seed": sb.style_seed if sb else None,
     }
 
     job_id = f"imgscene_{scene_id}_{len(_active_jobs) + 1}"
@@ -1349,6 +1406,7 @@ async def generate_single_image(
                 target_zones=scene_info.get("target_zones"),
                 mood=scene_info.get("mood"),
                 camera_angle=scene_info.get("camera_angle"),
+                style_seed=scene_info.get("style_seed"),
             )
             # Run image generation BEFORE opening a DB session (same as batch _generate_one)
             # so that the expensive API call does not hold an open DB connection.
