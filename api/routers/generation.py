@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -78,26 +79,63 @@ def _raise_if_jobs_failed(jobs) -> None:
         raise RuntimeError(f"{len(failed)} generation job(s) failed — " + "; ".join(msgs))
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# overnight Phase 8b — codex P1 SEC: seed_image_path はこの root 配下のみ許可。
+# .env / config 等の任意ローカルファイルを外部 (fal.ai / Runway) に送信させない。
+_DEFAULT_SEED_ROOT = _PROJECT_ROOT / "api" / "uploads" / "seeds"
+SEED_IMAGES_ROOT = Path(os.environ.get("SEED_IMAGES_ROOT", str(_DEFAULT_SEED_ROOT))).resolve()
+_ALLOWED_SEED_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
 def _validate_seed_image_path(path: str) -> None:
     """ultra_wide_i2v 用 seed 画像のフェイル・ファスト検証。
 
-    codex review 2026-05-16 P2 (round 2):
-        ``os.path.exists`` だけだとディレクトリや 0 バイトファイルも通ってしまう。
-        worker 側の ``_find_seed_image`` は size <= 100 を「使えない」と判定して
-        ``None`` を返すため、API 段階で同じ閾値で fail-fast にすることで silent
-        fallback (placeholder / text-to-video) で別物の成果物が出る事故を防ぐ。
+    検証順序:
+        1. 空文字でない
+        2. SEED_IMAGES_ROOT 配下に resolve できる (path traversal 防止)
+        3. 存在する通常ファイル (シンボリックリンク経由のディレクトリも拒否)
+        4. 拡張子が許可リスト (.jpg/.jpeg/.png/.webp) に含まれる
+        5. サイズが 100 bytes 超 (worker 側 _find_seed_image の閾値と一致)
+
+    codex review 2026-05-16:
+        round 2 P2: ``os.path.exists`` だけだとディレクトリ / 0 バイトファイルが通る。
+        overnight Phase 8b (codex round 3 P1 SEC): seed_image_path をリクエスト経由で
+        受け取る以上、攻撃者は ``/etc/passwd`` や ``.env`` を指定して任意ローカル
+        ファイルを base64 化 → 外部 API に送信できてしまう。SEED_IMAGES_ROOT 配下に
+        制限する形で path traversal を遮断する。
 
     Raises:
-        HTTPException 400 — パスが存在しない / 通常ファイルでない / サイズ過小。
+        HTTPException 400 — 検証失敗。理由 detail 内に明記。
     """
     if not path:
         raise HTTPException(400, "seed_image_path is empty")
-    if not os.path.exists(path):
-        raise HTTPException(400, f"seed_image_path not found: {path}")
-    if not os.path.isfile(path):
-        raise HTTPException(400, f"seed_image_path is not a regular file: {path}")
+
     try:
-        size = os.path.getsize(path)
+        resolved = Path(path).resolve(strict=False)
+    except (OSError, RuntimeError) as e:
+        raise HTTPException(400, f"seed_image_path cannot be resolved: {path} ({e})")
+
+    # SEED_IMAGES_ROOT 配下 chk (Python 3.9+ の Path.is_relative_to を使うが、3.8 互換性のため try/except)
+    try:
+        resolved.relative_to(SEED_IMAGES_ROOT)
+    except ValueError:
+        raise HTTPException(
+            400,
+            f"seed_image_path must be under SEED_IMAGES_ROOT ({SEED_IMAGES_ROOT}): {path}",
+        )
+
+    if not resolved.exists():
+        raise HTTPException(400, f"seed_image_path not found: {path}")
+    if not resolved.is_file():
+        raise HTTPException(400, f"seed_image_path is not a regular file: {path}")
+    if resolved.suffix.lower() not in _ALLOWED_SEED_EXTS:
+        raise HTTPException(
+            400,
+            f"seed_image_path extension not allowed (must be one of "
+            f"{sorted(_ALLOWED_SEED_EXTS)}): {path}",
+        )
+    try:
+        size = resolved.stat().st_size
     except OSError as e:
         raise HTTPException(400, f"seed_image_path unreadable: {path} ({e})")
     if size <= 100:
@@ -383,6 +421,18 @@ async def generate_video(req: VideoGenerateRequest, background_tasks: Background
     mode = GenerationMode(req.mode)
     provider = VideoProvider(req.provider)
 
+    # overnight Phase 8c — codex P1 FUNC: audit 後 unified mode は全 provider で raise する。
+    # backgrond task が必ず failed になる前に同期的に 400 を返し、有効な代替を案内する。
+    if mode == GenerationMode.UNIFIED:
+        raise HTTPException(
+            400,
+            "unified mode (21:9 segments → 5520x1200 stitch) は現行 provider "
+            f"({req.provider}) では生成不可です。代替: "
+            "(1) mode='zone' で 1:1 × 4 zone 並列生成、"
+            "(2) mode='ultra_wide_i2v' + seed_image_path で MJ/Flux 32:9 → i2v → crop、"
+            "または専用エンドポイント POST /api/generation/video/ultra-wide を使用してください。",
+        )
+
     if mode == GenerationMode.ULTRA_WIDE_I2V:
         if not req.seed_image_path:
             raise HTTPException(
@@ -507,6 +557,14 @@ async def generate_batch(req: BatchGenerateRequest, background_tasks: Background
     theme = DAY_TO_THEME[req.day]
     mode = GenerationMode(req.mode)
     provider = VideoProvider(req.provider)
+
+    # overnight Phase 8c — codex P1 FUNC: unified mode は generation 不可 (上記参照)
+    if mode == GenerationMode.UNIFIED:
+        raise HTTPException(
+            400,
+            "unified mode は現行 provider で生成不可。mode='zone' を指定するか、"
+            "個別シーン単位で POST /api/generation/video/ultra-wide を使用してください。",
+        )
 
     job_id = _new_job_id("webbatch")
 

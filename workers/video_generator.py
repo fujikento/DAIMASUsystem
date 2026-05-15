@@ -28,7 +28,13 @@ import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    # overnight Phase 8d — type-only import for "httpx.AsyncClient" forward-ref
+    # in _poll_runway_task signature. Avoids runtime cost when only static checkers
+    # need the symbol resolved.
+    import httpx  # noqa: F401
 
 
 class GenerationStatus(str, Enum):
