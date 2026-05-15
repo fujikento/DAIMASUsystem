@@ -41,6 +41,7 @@ from workers.content_compositor import (
     stitch_unified,
     fit_zone,
     split_for_projectors,
+    crop_to_table_band,
     LayoutSpec,
     CompositorError,
     TABLE_WIDTH,
@@ -102,9 +103,23 @@ _photo_service = PhotoAnimatorService()
 class VideoGenerateRequest(BaseModel):
     theme: str
     course: str
-    mode: str = "unified"          # unified / zone
+    mode: str = "unified"          # unified / zone / ultra_wide_i2v
     provider: str = "runway"       # runway / fal / kling / pika
-    zone_id: Optional[int] = None  # zone modeの場合 1-4
+    zone_id: Optional[int] = None  # zone モードの場合 1-4
+    # ultra_wide_i2v 用: 外部生成 (MJ --ar 32:9 / Flux など) の超ワイド静止画パス
+    seed_image_path: Optional[str] = None
+
+
+class UltraWideFromStillRequest(BaseModel):
+    """Option ③ 専用エンドポイント: 32:9 静止画 → Kling/Runway i2v → 5520x1200 crop。"""
+
+    theme: str
+    course: str
+    seed_image_path: str           # 必須: 事前生成した 32:9 静止画
+    provider: str = "fal"          # fal 推奨 (Kling i2v が input aspect を比較的尊重)
+    duration_seconds: int = 10
+    crop_after: bool = True        # 生成後に crop_to_table_band で 5520x1200 にする
+    output_cropped_path: Optional[str] = None  # 未指定なら "<生成パス>_band.mp4"
 
 
 class BatchGenerateRequest(BaseModel):
@@ -339,12 +354,25 @@ async def generate_video(req: VideoGenerateRequest, background_tasks: Background
     mode = GenerationMode(req.mode)
     provider = VideoProvider(req.provider)
 
+    if mode == GenerationMode.ULTRA_WIDE_I2V and not req.seed_image_path:
+        raise HTTPException(
+            400,
+            "ultra_wide_i2v モードには seed_image_path (事前生成の 32:9 静止画) が必須です。",
+        )
+
     job_id = _new_job_id("webgen")
 
     async def _run():
         try:
             if mode == GenerationMode.UNIFIED:
                 jobs = await _video_service.generate_unified_course(req.theme, req.course, provider)
+            elif mode == GenerationMode.ULTRA_WIDE_I2V:
+                jobs = await _video_service.generate_ultra_wide_from_still(
+                    req.theme,
+                    req.course,
+                    seed_image_path=req.seed_image_path,  # type: ignore[arg-type]  # validated above
+                    provider=provider,
+                )
             else:
                 jobs = await _video_service.generate_zone_course(
                     req.theme, req.course, req.zone_id or 0, provider
@@ -367,6 +395,73 @@ async def generate_video(req: VideoGenerateRequest, background_tasks: Background
         job_id=job_id,
         status="processing",
         message=f"{req.theme}/{req.course} ({req.mode}) の生成を開始しました",
+    )
+
+
+@router.post("/video/ultra-wide", response_model=JobStatusResponse)
+async def generate_ultra_wide_video(
+    req: UltraWideFromStillRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Option ③: 事前生成の 32:9 静止画 → Kling/Runway i2v → 中央帯 crop → 5520x1200。
+
+    フロー:
+      1. seed_image_path (MJ/Flux などで作った超ワイド静止画) を i2v に投入
+      2. provider native 最大 (16:9) で動画化
+      3. crop_after=True なら crop_to_table_band で table_width x table_height に切り出す
+
+    実機検証ポイント:
+      - Kling i2v が input image の超ワイド構図をどこまで保ってくれるか
+        (Kling Omni 系を使うとさらに input aspect を尊重しやすい)
+      - 保たれなかった場合でも、後段 crop で破綻なく 5520x1200 が出るか
+    """
+    if req.theme not in THEME_PROMPTS:
+        raise HTTPException(400, f"Unknown theme: {req.theme}")
+    if req.course not in COURSE_ORDER:
+        raise HTTPException(400, f"Unknown course: {req.course}")
+    if not os.path.exists(req.seed_image_path):
+        raise HTTPException(400, f"seed_image_path not found: {req.seed_image_path}")
+
+    provider = VideoProvider(req.provider)
+    job_id = _new_job_id("webuw")
+
+    async def _run():
+        try:
+            gen_job = await _video_service.generate_ultra_wide_from_still(
+                req.theme,
+                req.course,
+                seed_image_path=req.seed_image_path,
+                provider=provider,
+                duration_seconds=req.duration_seconds,
+            )
+            _raise_if_jobs_failed(gen_job)
+
+            final_path = gen_job.output_path
+            if req.crop_after and gen_job.output_path:
+                layout = _layout_from_db(db)
+                cropped = req.output_cropped_path or gen_job.output_path.replace(".mp4", "_band.mp4")
+                final_path = await crop_to_table_band(gen_job.output_path, cropped, layout=layout)
+            await _update_job(job_id, status="complete", output_path=final_path)
+        except Exception as e:
+            logger.exception("[generate_ultra_wide_video] job %s failed", job_id)
+            await _update_job(job_id, status="failed", error=str(e))
+
+    await _register_job(job_id, {
+        "status": "processing",
+        "theme": req.theme,
+        "course": req.course,
+        "mode": "ultra_wide_i2v",
+        "provider": req.provider,
+        "seed_image_path": req.seed_image_path,
+        "crop_after": req.crop_after,
+    })
+    background_tasks.add_task(_run)
+
+    return JobStatusResponse(
+        job_id=job_id,
+        status="processing",
+        message=f"{req.theme}/{req.course} ultra-wide i2v 生成を開始しました (seed={req.seed_image_path})",
     )
 
 

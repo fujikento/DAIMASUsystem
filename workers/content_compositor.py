@@ -368,6 +368,98 @@ async def fit_zone(
 
 
 # ====================================================================
+# 2b. ウルトラワイド帯 crop: 任意 aspect の動画 → table_width x table_height
+# ====================================================================
+
+async def crop_to_table_band(
+    input_path: str,
+    output_path: str,
+    layout: Optional[LayoutSpec] = None,
+) -> str:
+    """任意 aspect の input 動画を、中央水平帯として table_width x table_height に
+    crop + scale する。option ③ (MJ 32:9 still → Kling i2v → このメソッド) で使う。
+
+    手順:
+    1. ffprobe で input 解像度を取得
+    2. input の aspect が target (≈4.6:1) より広いなら、左右クロップで target aspect に
+       揃え、scale で table_width に伸ばす
+    3. input の aspect が target より狭いなら、scale で table_width に揃え、
+       中央 band を crop して table_height に
+    4. 出力解像度を ffprobe で再検証
+
+    target aspect の決定:
+        target_w / target_h (デフォルト 5520 / 1200 = 4.6)
+
+    Note: 入力が小さすぎる (例: 1920x1080 → 5520 にアップスケール) と画質劣化が
+    顕著になる。Kling/Runway の生成解像度を考慮し、できるだけ 4K (3840x2160) で
+    生成した上でこの crop を通すのが理想。
+    """
+    spec = _resolve_layout(layout)
+    table_w = spec.table_width
+    table_h = spec.table_height
+    target_aspect = table_w / table_h  # 例: 4.6
+
+    _require_ffmpeg()
+    info = await get_video_info(input_path)
+    src_w = info["width"]
+    src_h = info["height"]
+    src_aspect = src_w / src_h if src_h else 0
+    if src_aspect <= 0:
+        raise CompositorError(f"crop_to_table_band: invalid source dimensions {src_w}x{src_h}")
+
+    print(f"[CropBand] {input_path} → {output_path}")
+    print(f"[CropBand] source: {src_w}x{src_h} (aspect {src_aspect:.3f}), target: {table_w}x{table_h} (aspect {target_aspect:.3f})")
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    if src_aspect >= target_aspect:
+        # 入力の方が横長 → 左右クロップで aspect を target に揃え、その後 scale
+        crop_w = int(round(src_h * target_aspect))
+        crop_x = max(0, (src_w - crop_w) // 2)
+        filter_str = (
+            f"crop={crop_w}:{src_h}:{crop_x}:0,"
+            f"scale={table_w}:{table_h}:flags=lanczos"
+        )
+    else:
+        # 入力の方が縦長 → scale で幅を table_w に合わせ、中央 band を crop
+        scaled_h = int(round(table_w / src_aspect))
+        crop_y = max(0, (scaled_h - table_h) // 2)
+        filter_str = (
+            f"scale={table_w}:{scaled_h}:flags=lanczos,"
+            f"crop={table_w}:{table_h}:0:{crop_y}"
+        )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-vf", filter_str,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "16",
+        "-pix_fmt", "yuv420p",
+        "-an",
+        output_path,
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        raise CompositorError(
+            f"crop_to_table_band ffmpeg failed (rc={proc.returncode}): "
+            f"{stderr.decode(errors='replace')[-500:]}"
+        )
+
+    out_info = await get_video_info(output_path)
+    if out_info["width"] != table_w or out_info["height"] != table_h:
+        raise CompositorError(
+            f"crop_to_table_band output resolution mismatch: "
+            f"got {out_info['width']}x{out_info['height']}, expected {table_w}x{table_h}"
+        )
+    print(f"[CropBand] Output: {output_path} ({out_info['width']}x{out_info['height']}, {out_info['duration']:.1f}s)")
+    return output_path
+
+
+# ====================================================================
 # 3. プロジェクター分割: 全体映像 → PJ1/PJ2/PJ3
 # ====================================================================
 

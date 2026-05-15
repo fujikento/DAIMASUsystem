@@ -47,8 +47,13 @@ class VideoProvider(str, Enum):
 
 
 class GenerationMode(str, Enum):
-    UNIFIED = "unified"   # 全テーブル統一 (21:9 × 2 → 5520x1200)
-    ZONE = "zone"         # 区画別 (1:1 → 1380x1200)
+    UNIFIED = "unified"           # 全テーブル統一 (21:9 × 2 → 5520x1200)
+    ZONE = "zone"                 # 区画別 (1:1 → 1380x1200)
+    # 外部生成の超ワイド静止画 (MJ --ar 32:9 / Flux など) を i2v に投入して
+    # provider native の最大幅 (16:9) で生成 → 後段 compositor で 5520x1200 に crop。
+    # Kling/Runway が 32:9 出力に対応していないので、入力画像の構図を Kling が
+    # どこまで保ってくれるかが鍵 (Kling Omni 系は input aspect を比較的尊重)。
+    ULTRA_WIDE_I2V = "ultra_wide_i2v"
 
 
 # ─── テーブル物理仕様 ─────────────────────────────────────────────
@@ -298,7 +303,10 @@ def _build_prompt(
     else:
         mode_key = str(mode)
 
-    scene_desc = base.get(mode_key, "")
+    # ULTRA_WIDE_I2V は専用の prompt エントリを持たない — unified prompt を流用する。
+    # 構図はシード画像 (MJ 32:9) が担うため、テキスト側は scene の意味だけ伝われば十分。
+    lookup_key = "unified" if mode_key == "ultra_wide_i2v" else mode_key
+    scene_desc = base.get(lookup_key, "")
     if not scene_desc:
         raise ValueError(f"No prompt for theme={theme}, course={course}, mode={mode_key}")
 
@@ -315,6 +323,13 @@ def _build_prompt(
         else:
             suffix = ""
         prompt = f"{prefix}, {scene_desc}{suffix}"
+    elif mode == GenerationMode.ULTRA_WIDE_I2V:
+        # i2v なので動きの指示中心。構図は input image に従わせる旨を明示。
+        prompt = (
+            "Animate the provided ultra-wide image with cinematic motion, "
+            "preserve the input composition and aspect ratio, "
+            f"{scene_desc}, smooth horizontal flow"
+        )
     else:
         prompt = f"{_ZONE_PREFIX}, {scene_desc}"
 
@@ -428,6 +443,16 @@ class VideoGeneratorService:
             seg_label = f"_{segment}" if segment else ""
             filename = f"{course}{seg_label}__{job_id}.mp4"
             aspect_ratio = "21:9"
+        elif mode == GenerationMode.ULTRA_WIDE_I2V:
+            if not seed_image_path:
+                raise ValueError(
+                    "ULTRA_WIDE_I2V mode requires seed_image_path "
+                    "(pre-generated 32:9 still from Midjourney/Flux/etc.)"
+                )
+            filename = f"{course}_uw__{job_id}.mp4"
+            # metadata 上は 32:9 とするが、provider API には個別 method 内で
+            # 16:9 にダウンサンプルして投げる (Kling/Runway が 32:9 を受け付けないため)
+            aspect_ratio = "32:9"
         else:
             zone_label = f"_zone{zone_id}" if zone_id else ""
             filename = f"{course}{zone_label}__{job_id}.mp4"
@@ -522,8 +547,13 @@ class VideoGeneratorService:
         if runway_ratio == "21:9":
             raise RuntimeError(
                 "Runway provider does not support 21:9 (unified mode requires 21:9). "
-                "Switch provider to fal/kling or use zone mode (1:1)."
+                "Use zone mode (1:1) or ultra_wide_i2v mode (32:9 still → i2v → crop)."
             )
+        # ULTRA_WIDE_I2V: 32:9 シードを Runway native 最大 (16:9) で投げ、
+        # 後段 compositor で中央 4.6:1 帯に crop。Runway は input aspect の保持に
+        # Kling より厳格なので、option ③ では fal.ai 経由が第一候補。
+        if job.mode == GenerationMode.ULTRA_WIDE_I2V:
+            runway_ratio = "16:9"
 
         # Build the request payload
         if seed_image_b64:
@@ -697,13 +727,19 @@ class VideoGeneratorService:
         if job.aspect_ratio == "21:9":
             raise RuntimeError(
                 "fal.ai Kling does not support 21:9 (unified mode requires 21:9). "
-                "Use zone mode (1:1) or a 21:9-capable provider."
+                "Use zone mode (1:1) or ultra_wide_i2v mode (32:9 still → i2v → crop)."
             )
-        fal_aspect = "16:9"
-        if job.aspect_ratio == "1:1":
-            fal_aspect = "1:1"
-        elif job.aspect_ratio == "9:16":
-            fal_aspect = "9:16"
+        # ULTRA_WIDE_I2V: 32:9 シードを provider native 最大 (16:9) で投げ、
+        # 後段 compositor.crop_to_table_band で中央 4.6:1 帯を切り出す。
+        # Kling が input aspect を保つかは実機検証次第 (option ③)。
+        if job.mode == GenerationMode.ULTRA_WIDE_I2V:
+            fal_aspect = "16:9"
+        else:
+            fal_aspect = "16:9"
+            if job.aspect_ratio == "1:1":
+                fal_aspect = "1:1"
+            elif job.aspect_ratio == "9:16":
+                fal_aspect = "9:16"
 
         # Duration: Kling accepts "5" or "10" as string
         duration_str = "5" if job.duration_seconds <= 5 else "10"
@@ -872,6 +908,43 @@ class VideoGeneratorService:
             ]
             results = await asyncio.gather(*[self.generate(j) for j in jobs])
             return results[0]  # 最初のジョブを返す
+
+    async def generate_ultra_wide_from_still(
+        self,
+        theme: str,
+        course: str,
+        seed_image_path: str,
+        provider: VideoProvider = VideoProvider.FAL,
+        extra_prompt: Optional[str] = None,
+        duration_seconds: int = 10,
+    ) -> GenerationJob:
+        """Option ③: 外部生成の超ワイド静止画 (MJ --ar 32:9 / Flux など) を i2v に投入し、
+        provider native 最大 (16:9) で動画化 → 後段 compositor で 5520x1200 に crop する。
+
+        前提:
+        - seed_image_path には事前生成済みの超ワイド静止画 (理想は 32:9 / 4.6:1) を渡す
+        - provider は fal.ai (Kling i2v) 推奨。Runway は input aspect 保持が弱い
+        - 生成後に workers.content_compositor.crop_to_table_band で帯状に切り出す
+          (この関数は本メソッドでは呼ばない。caller 側で paipeline 化する)
+
+        Kling/Runway が 32:9 を直接出力できない以上、option ③ は実機 1 ジョブで
+        「どこまで input aspect を保ってくれるか」を確認する暫定経路。
+        Kling Omni 系を使えば改善する可能性あり (future work)。
+        """
+        if not seed_image_path:
+            raise ValueError("seed_image_path is required for ULTRA_WIDE_I2V mode")
+        print(f"\n[UltraWideI2V] {theme}/{course} | seed={seed_image_path} | provider={provider.value}")
+
+        job = self.create_job(
+            theme,
+            course,
+            GenerationMode.ULTRA_WIDE_I2V,
+            provider,
+            extra_prompt=extra_prompt,
+            seed_image_path=seed_image_path,
+            duration_seconds=duration_seconds,
+        )
+        return await self.generate(job)
 
     async def generate_theme_batch(
         self,
