@@ -687,7 +687,7 @@ class VideoGeneratorService:
         seed_root = Path(os.environ.get("SEED_IMAGES_ROOT", str(default_seed_root))).resolve()
         allowed_exts = {".jpg", ".jpeg", ".png", ".webp"}
 
-        # 入力パス自体が symlink ならその時点で拒否 (codex round 5 厳密化)
+        # 入力パス自体が symlink ならその時点で拒否 (codex round 5)
         input_path = Path(job.seed_image_path)
         if input_path.is_symlink():
             print(f"[VideoGen] Seed image path is a symlink (rejected): {input_path}")
@@ -699,50 +699,74 @@ class VideoGeneratorService:
             print(f"[VideoGen] Seed image resolve failed: {e}")
             return None
 
-        try:
-            resolved.relative_to(seed_root)
-        except ValueError:
-            print(f"[VideoGen] Seed image outside SEED_IMAGES_ROOT ({seed_root}): {resolved}")
+        # フラット構造強制 (codex round 6 P1): subdir 許可だと親 dir symlink race
+        # が残る。SEED_IMAGES_ROOT 直下のファイルのみ許可することで全 path component
+        # を root_fd 起点で 1 step open でき、攻撃面を最小化する。
+        if resolved.parent != seed_root:
+            print(
+                f"[VideoGen] Seed image must be directly under SEED_IMAGES_ROOT (no subdir): "
+                f"parent={resolved.parent}, root={seed_root}"
+            )
             return None
 
         if resolved.suffix.lower() not in allowed_exts:
             print(f"[VideoGen] Seed image extension not allowed: {resolved}")
             return None
 
-        # TOCTOU 閉鎖 (codex round 5 P1):
-        # validation と open() の間にファイルを差し替えられる race を防ぐため、
-        # O_NOFOLLOW で open し (symlink 経由なら open 自体が失敗)、fstat で
-        # 開いた fd のメタデータを検証してから読み出す。これで「検証した
-        # オブジェクト」と「読み出すオブジェクト」が同一であることを保証する。
+        # フル TOCTOU 閉鎖 (codex round 6 P1+P2):
+        # 1. root を O_DIRECTORY | O_NOFOLLOW で open (root 自身が symlink でない確認)
+        # 2. 最終 component を dir_fd=root_fd + O_NOFOLLOW + O_NONBLOCK で open
+        #    - O_NOFOLLOW: 最終 component が symlink なら ELOOP
+        #    - O_NONBLOCK: FIFO に差し替えられた場合の open() block を回避
+        # 3. fstat(fd) で S_ISREG + size 検証 → 検証と読み出しが同一 fd
         import stat as _stat
 
         try:
-            fd = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW)
+            root_fd = os.open(seed_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as e:
-            print(f"[VideoGen] Seed image open failed (possibly symlink swapped in): {e}")
+            print(f"[VideoGen] Seed root open failed (root must be a real directory): {e}")
             return None
 
+        file_fd = -1
         try:
-            st = os.fstat(fd)
+            try:
+                file_fd = os.open(
+                    resolved.name,
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=root_fd,
+                )
+            except OSError as e:
+                print(f"[VideoGen] Seed image open failed (symlink/FIFO/race?): {e}")
+                return None
+
+            try:
+                st = os.fstat(file_fd)
+            except OSError as e:
+                print(f"[VideoGen] Seed image fstat failed: {e}")
+                return None
             if not _stat.S_ISREG(st.st_mode):
                 print(f"[VideoGen] Seed image fd not a regular file (mode={oct(st.st_mode)})")
                 return None
             if st.st_size <= 100:
                 print(f"[VideoGen] Seed image too small ({st.st_size}B): {resolved}")
                 return None
-            with os.fdopen(fd, "rb", closefd=True) as f:
-                # fdopen takes ownership; do not call os.close(fd) afterwards
-                fd = -1
+
+            with os.fdopen(file_fd, "rb", closefd=True) as f:
+                file_fd = -1  # fdopen took ownership
                 image_bytes = f.read()
         except Exception as e:
             print(f"[VideoGen] Failed to read seed image: {e}")
             return None
         finally:
-            if fd >= 0:
+            if file_fd >= 0:
                 try:
-                    os.close(fd)
+                    os.close(file_fd)
                 except OSError:
                     pass
+            try:
+                os.close(root_fd)
+            except OSError:
+                pass
 
         print(f"[VideoGen] Using seed image: {resolved.name} ({len(image_bytes) / 1024:.0f}KB)")
         return base64.b64encode(image_bytes).decode("ascii")

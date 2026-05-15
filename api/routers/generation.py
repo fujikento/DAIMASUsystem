@@ -120,13 +120,13 @@ def _validate_seed_image_path(path: str) -> None:
     except (OSError, RuntimeError) as e:
         raise HTTPException(400, f"seed_image_path cannot be resolved: {path} ({e})")
 
-    # SEED_IMAGES_ROOT 配下 chk (Python 3.9+ の Path.is_relative_to を使うが、3.8 互換性のため try/except)
-    try:
-        resolved.relative_to(SEED_IMAGES_ROOT)
-    except ValueError:
+    # SEED_IMAGES_ROOT 直下のみ許可 (codex round 6 P1: subdir 許可だと親 dir
+    # symlink race を完全には閉じられないので、フラット構造を強制する)
+    if resolved.parent != SEED_IMAGES_ROOT:
         raise HTTPException(
             400,
-            f"seed_image_path must be under SEED_IMAGES_ROOT ({SEED_IMAGES_ROOT}): {path}",
+            f"seed_image_path must be directly under SEED_IMAGES_ROOT ({SEED_IMAGES_ROOT}), "
+            f"no subdirectories allowed: parent was {resolved.parent}",
         )
 
     if not resolved.exists():
