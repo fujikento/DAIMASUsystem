@@ -1,7 +1,18 @@
-"""映像生成 & 合成パイプライン ルーター"""
+"""映像生成 & 合成パイプライン ルーター
 
-import sys
+精度上の要件 (audit 2026-05-16):
+- 同時 POST で job_id が衝突しないように uuid4 を使う。
+- _active_jobs の register/update を asyncio.Lock で直列化する。
+- processing 中の job は cap 超過 eviction の対象外にする。
+- compositor 呼び出しは DB の ProjectionConfig から LayoutSpec を組み立てて注入。
+- CompositorError は HTTP 500 で明示的に伝播。empty file fallback はもう存在しない。
+"""
+
+import asyncio
+import logging
 import os
+import sys
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -17,16 +28,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from workers.video_generator import (
     VideoGeneratorService,
     GenerationMode,
+    GenerationStatus,
     VideoProvider,
     THEME_PROMPTS,
     DAY_TO_THEME,
     COURSE_ORDER,
     _build_prompt,
 )
+
+
 from workers.content_compositor import (
     stitch_unified,
     fit_zone,
     split_for_projectors,
+    LayoutSpec,
+    CompositorError,
     TABLE_WIDTH,
     TABLE_HEIGHT,
     ZONE_WIDTH,
@@ -44,6 +60,35 @@ from workers.photo_animator import (
     AnimationProvider,
     BIRTHDAY_TEMPLATES,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _raise_if_jobs_failed(jobs) -> None:
+    """generate_*_course から返ってきた GenerationJob/iterable をチェックし、
+    1件でも FAILED ならまとめて RuntimeError を投げる。"""
+    if jobs is None:
+        return
+    if not isinstance(jobs, (list, tuple)):
+        jobs = [jobs]
+    failed = [j for j in jobs if getattr(j, "status", None) == GenerationStatus.FAILED]
+    if failed:
+        msgs = [f"{getattr(j, 'job_id', '?')}: {getattr(j, 'error', 'unknown')}" for j in failed]
+        raise RuntimeError(f"{len(failed)} generation job(s) failed — " + "; ".join(msgs))
+
+
+def _layout_from_db(db: Session) -> LayoutSpec:
+    """DB の ProjectionConfig を LayoutSpec に変換する。未設定ならデフォルト。"""
+    config = db.query(ProjectionConfig).first()
+    if not config:
+        return LayoutSpec()
+    return LayoutSpec(
+        pj_width=config.pj_width,
+        pj_height=config.pj_height,
+        pj_count=config.pj_count,
+        blend_overlap=config.blend_overlap,
+        zone_count=config.zone_count,
+    )
 
 router = APIRouter(prefix="/api/generation", tags=["generation"])
 
@@ -102,18 +147,36 @@ class JobStatusResponse(BaseModel):
 
 # ─── ジョブ追跡用（インメモリ） ───────────────────────────────
 # Limit dict size to prevent unbounded memory growth.
+# audit 2026-05-16: collision-safe な uuid4 ID + asyncio.Lock 直列化。
+# processing job は eviction しない (KeyError + 追跡不能になるのを防ぐ)。
 _MAX_ACTIVE_JOBS = 500
 _active_jobs: dict[str, dict] = {}
+_jobs_lock = asyncio.Lock()
 
 
-def _register_job(job_id: str, job_data: dict) -> None:
-    """Register a job and evict the oldest entries if the dict exceeds the cap."""
-    _active_jobs[job_id] = job_data
-    if len(_active_jobs) > _MAX_ACTIVE_JOBS:
-        terminal = [k for k, v in _active_jobs.items() if v.get("status") in ("complete", "failed")]
-        to_remove = terminal or list(_active_jobs.keys())
-        for k in to_remove[: len(_active_jobs) - _MAX_ACTIVE_JOBS]:
-            _active_jobs.pop(k, None)
+def _new_job_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+async def _register_job(job_id: str, job_data: dict) -> None:
+    """Register a job. cap 超過時は terminal jobs (complete/failed) のみ FIFO で
+    eviction する。processing 中の job は保護する。"""
+    async with _jobs_lock:
+        _active_jobs[job_id] = job_data
+        if len(_active_jobs) > _MAX_ACTIVE_JOBS:
+            terminal = [k for k, v in _active_jobs.items()
+                        if v.get("status") in ("complete", "failed")]
+            for k in terminal[: len(_active_jobs) - _MAX_ACTIVE_JOBS]:
+                _active_jobs.pop(k, None)
+
+
+async def _update_job(job_id: str, **fields) -> None:
+    """Existing job のフィールドを atomic に更新。job が消えていれば no-op。"""
+    async with _jobs_lock:
+        job = _active_jobs.get(job_id)
+        if job is None:
+            return
+        job.update(fields)
 
 
 # ─── 映像生成エンドポイント ──────────────────────────────────
@@ -276,21 +339,23 @@ async def generate_video(req: VideoGenerateRequest, background_tasks: Background
     mode = GenerationMode(req.mode)
     provider = VideoProvider(req.provider)
 
+    job_id = _new_job_id("webgen")
+
     async def _run():
         try:
             if mode == GenerationMode.UNIFIED:
-                await _video_service.generate_unified_course(req.theme, req.course, provider)
+                jobs = await _video_service.generate_unified_course(req.theme, req.course, provider)
             else:
-                await _video_service.generate_zone_course(
+                jobs = await _video_service.generate_zone_course(
                     req.theme, req.course, req.zone_id or 0, provider
                 )
-            _active_jobs[job_id]["status"] = "complete"
+            _raise_if_jobs_failed(jobs)
+            await _update_job(job_id, status="complete")
         except Exception as e:
-            _active_jobs[job_id]["status"] = "failed"
-            _active_jobs[job_id]["error"] = str(e)
+            logger.exception("[generate_video] job %s failed", job_id)
+            await _update_job(job_id, status="failed", error=str(e))
 
-    job_id = f"webgen_{len(_active_jobs)+1}"
-    _register_job(job_id, {
+    await _register_job(job_id, {
         "status": "processing",
         "theme": req.theme,
         "course": req.course,
@@ -315,16 +380,17 @@ async def generate_batch(req: BatchGenerateRequest, background_tasks: Background
     mode = GenerationMode(req.mode)
     provider = VideoProvider(req.provider)
 
+    job_id = _new_job_id("webbatch")
+
     async def _run():
         try:
             await _video_service.generate_theme_batch(theme, mode, provider)
-            _active_jobs[job_id]["status"] = "complete"
+            await _update_job(job_id, status="complete")
         except Exception as e:
-            _active_jobs[job_id]["status"] = "failed"
-            _active_jobs[job_id]["error"] = str(e)
+            logger.exception("[generate_batch] job %s failed", job_id)
+            await _update_job(job_id, status="failed", error=str(e))
 
-    job_id = f"webbatch_{len(_active_jobs)+1}"
-    _register_job(job_id, {"status": "processing", "day": req.day, "mode": req.mode})
+    await _register_job(job_id, {"status": "processing", "day": req.day, "mode": req.mode})
     background_tasks.add_task(_run)
 
     return JobStatusResponse(
@@ -377,6 +443,8 @@ async def generate_from_courses(
         for d in dishes
     ]
 
+    job_id = _new_job_id("webcourse")
+
     async def _run():
         try:
             completed = 0
@@ -388,25 +456,25 @@ async def generate_from_courses(
 
                 # prompt_hint がある場合、ベースプロンプトに追加
                 if mode == GenerationMode.UNIFIED:
-                    await _video_service.generate_unified_course(
+                    jobs = await _video_service.generate_unified_course(
                         theme, course_key, provider,
                         extra_prompt=dish["prompt_hint"],
                     )
                 else:
-                    await _video_service.generate_zone_course(
+                    jobs = await _video_service.generate_zone_course(
                         theme, course_key, 0, provider,
                         extra_prompt=dish["prompt_hint"],
                     )
+                _raise_if_jobs_failed(jobs)
                 completed += 1
-                _active_jobs[job_id]["progress"] = f"{completed}/{len(dish_info)}"
+                await _update_job(job_id, progress=f"{completed}/{len(dish_info)}")
 
-            _active_jobs[job_id]["status"] = "complete"
+            await _update_job(job_id, status="complete")
         except Exception as e:
-            _active_jobs[job_id]["status"] = "failed"
-            _active_jobs[job_id]["error"] = str(e)
+            logger.exception("[generate_from_courses] job %s failed", job_id)
+            await _update_job(job_id, status="failed", error=str(e))
 
-    job_id = f"webcourse_{len(_active_jobs)+1}"
-    _register_job(job_id, {
+    await _register_job(job_id, {
         "status": "processing",
         "day": req.day,
         "mode": req.mode,
@@ -427,40 +495,53 @@ async def generate_from_courses(
 # ─── 合成パイプライン ────────────────────────────────────────
 
 @router.post("/composite/stitch", response_model=JobStatusResponse)
-async def composite_stitch(req: StitchRequest):
-    """統一モード: L+R → 5520x1200 合成"""
+async def composite_stitch(req: StitchRequest, db: Session = Depends(get_db)):
+    """統一モード: L+R → table_width x table_height 合成"""
     output = req.output_path or req.left_path.replace("_left.", "_stitched.")
+    layout = _layout_from_db(db)
     try:
-        result = await stitch_unified(req.left_path, req.right_path, output)
-        return JobStatusResponse(job_id="stitch", status="complete", message="合成完了", output_path=result)
-    except Exception as e:
+        result = await stitch_unified(req.left_path, req.right_path, output, layout=layout)
+        return JobStatusResponse(
+            job_id=_new_job_id("stitch"),
+            status="complete",
+            message="合成完了",
+            output_path=result,
+        )
+    except CompositorError as e:
         raise HTTPException(500, f"Stitch failed: {e}")
 
 
 @router.post("/composite/zone-fit", response_model=JobStatusResponse)
-async def composite_zone_fit(req: ZoneFitRequest):
-    """区画モード: 1:1 → 1380x1200"""
+async def composite_zone_fit(req: ZoneFitRequest, db: Session = Depends(get_db)):
+    """区画モード: 1:1 → zone_width x zone_height"""
     output = req.output_path or req.input_path.replace(".mp4", "_fitted.mp4")
+    layout = _layout_from_db(db)
     try:
-        result = await fit_zone(req.input_path, output)
-        return JobStatusResponse(job_id="zone-fit", status="complete", message="区画フィット完了", output_path=result)
-    except Exception as e:
+        result = await fit_zone(req.input_path, output, layout=layout)
+        return JobStatusResponse(
+            job_id=_new_job_id("zone-fit"),
+            status="complete",
+            message="区画フィット完了",
+            output_path=result,
+        )
+    except CompositorError as e:
         raise HTTPException(500, f"Zone fit failed: {e}")
 
 
 @router.post("/composite/split", response_model=JobStatusResponse)
-async def composite_split(req: SplitRequest):
+async def composite_split(req: SplitRequest, db: Session = Depends(get_db)):
     """3プロジェクター分割"""
     output_dir = req.output_dir or str(os.path.dirname(req.input_path))
+    layout = _layout_from_db(db)
     try:
-        results = await split_for_projectors(req.input_path, output_dir)
+        results = await split_for_projectors(req.input_path, output_dir, layout=layout)
         return JobStatusResponse(
-            job_id="split",
+            job_id=_new_job_id("split"),
             status="complete",
             message=f"3PJ分割完了: {len(results)}ファイル",
             output_path=", ".join(results),
         )
-    except Exception as e:
+    except CompositorError as e:
         raise HTTPException(500, f"Split failed: {e}")
 
 
@@ -505,6 +586,8 @@ async def generate_animation(req: AnimateRequest, background_tasks: BackgroundTa
 
     provider = AnimationProvider(req.provider)
 
+    job_id = _new_job_id("webanim")
+
     async def _run():
         try:
             job = _photo_service.create_job(
@@ -515,14 +598,16 @@ async def generate_animation(req: AnimateRequest, background_tasks: BackgroundTa
                 provider=provider,
             )
             result = await _photo_service.process(job)
-            _active_jobs[job_id]["status"] = result.status.value
-            _active_jobs[job_id]["output_path"] = result.final_output_path
+            await _update_job(
+                job_id,
+                status=result.status.value,
+                output_path=result.final_output_path,
+            )
         except Exception as e:
-            _active_jobs[job_id]["status"] = "failed"
-            _active_jobs[job_id]["error"] = str(e)
+            logger.exception("[generate_animation] job %s failed", job_id)
+            await _update_job(job_id, status="failed", error=str(e))
 
-    job_id = f"webanim_{len(_active_jobs)+1}"
-    _register_job(job_id, {"status": "processing", "template": req.template_id})
+    await _register_job(job_id, {"status": "processing", "template": req.template_id})
     background_tasks.add_task(_run)
 
     return JobStatusResponse(
@@ -535,14 +620,17 @@ async def generate_animation(req: AnimateRequest, background_tasks: BackgroundTa
 # ─── ジョブ管理 ──────────────────────────────────────────────
 
 @router.get("/jobs")
-def list_jobs():
+async def list_jobs():
     """アクティブジョブ一覧"""
-    return _active_jobs
+    async with _jobs_lock:
+        return dict(_active_jobs)
 
 
 @router.get("/jobs/{job_id}")
-def get_job(job_id: str):
+async def get_job(job_id: str):
     """ジョブステータス取得"""
-    if job_id not in _active_jobs:
-        raise HTTPException(404, "Job not found")
-    return _active_jobs[job_id]
+    async with _jobs_lock:
+        job = _active_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "Job not found")
+        return dict(job)

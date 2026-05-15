@@ -1,10 +1,10 @@
 """
 コンテンツコンポジター v2
 
-2つの合成パイプライン:
+3つの合成パイプライン:
 
-1. unified_stitch  — 21:9 × 2セグメント(L/R) → 5520x1200 シームレス合成
-2. zone_fit        — 1:1正方形映像 → 1380x1200 区画サイズにフィット
+1. unified_stitch  — 21:9 × 2セグメント(L/R) → table_width x table_height シームレス合成
+2. zone_fit        — 1:1正方形映像 → zone_width x zone_height 区画サイズにフィット
 3. split           — 全体映像を3プロジェクター用に分割
 
 使い方:
@@ -24,27 +24,46 @@
 
     # テーブルレイアウト情報
     python workers/content_compositor.py info
+
+精度上の要件 (audit 2026-05-16):
+- ffmpeg/ffprobe 不在や失敗時は CompositorError を投げる。empty .touch() を
+  成功扱いしない (投影側に黒フレームが流れない)。
+- ffprobe の framerate は eval() ではなく fractions.Fraction で parse。
+- 統一モード合成は xstack ではなく overlay+blend mask による真の crossfade。
+  中央 seam を緩和する。
+- 分割は各 ffmpeg の returncode + output 解像度を検証する。
+- 解像度は module constants ではなく LayoutSpec として渡せる。
 """
 
 import asyncio
 import json
+import shutil
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Optional
 
-# ─── テーブル物理仕様 ─────────────────────────────────────────────
-PJ_WIDTH = 1920
-PJ_HEIGHT = 1200
-PJ_COUNT = 3
-BLEND_OVERLAP = 120  # エッジブレンド重なり (px)
 
-# 実効投影解像度
+class CompositorError(RuntimeError):
+    """Compositor が成功状態を保証できなかったときに投げる。"""
+
+
+# ─── テーブル物理仕様 (デフォルト) ─────────────────────────────
+DEFAULT_PJ_WIDTH = 1920
+DEFAULT_PJ_HEIGHT = 1200
+DEFAULT_PJ_COUNT = 3
+DEFAULT_BLEND_OVERLAP = 120  # エッジブレンド重なり (px)
+DEFAULT_ZONE_COUNT = 4
+
+# 後方互換のための module constants (新規呼び出し側は LayoutSpec を渡すこと)
+PJ_WIDTH = DEFAULT_PJ_WIDTH
+PJ_HEIGHT = DEFAULT_PJ_HEIGHT
+PJ_COUNT = DEFAULT_PJ_COUNT
+BLEND_OVERLAP = DEFAULT_BLEND_OVERLAP
 TABLE_WIDTH = (PJ_WIDTH * PJ_COUNT) - (BLEND_OVERLAP * (PJ_COUNT - 1))  # 5520
 TABLE_HEIGHT = PJ_HEIGHT  # 1200
 TABLE_ASPECT = TABLE_WIDTH / TABLE_HEIGHT  # 4.6
-
-# 区画 (4テーブル)
-ZONE_COUNT = 4
+ZONE_COUNT = DEFAULT_ZONE_COUNT
 ZONE_WIDTH = TABLE_WIDTH // ZONE_COUNT   # 1380
 ZONE_HEIGHT = TABLE_HEIGHT               # 1200
 
@@ -58,7 +77,57 @@ SEGMENT_OVERLAP_RATIO = 0.20  # 左右20%オーバーラップ
 # 1:1 4Kアップスケール出力: 2160 x 2160
 ZONE_NATIVE = 2160
 
-# ─── ゾーン座標 ──────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class LayoutSpec:
+    """投影レイアウト仕様。DB の ProjectionConfig を表す不変オブジェクト。"""
+
+    pj_width: int = DEFAULT_PJ_WIDTH
+    pj_height: int = DEFAULT_PJ_HEIGHT
+    pj_count: int = DEFAULT_PJ_COUNT
+    blend_overlap: int = DEFAULT_BLEND_OVERLAP
+    zone_count: int = DEFAULT_ZONE_COUNT
+
+    @property
+    def table_width(self) -> int:
+        return (self.pj_width * self.pj_count) - (self.blend_overlap * (self.pj_count - 1))
+
+    @property
+    def table_height(self) -> int:
+        return self.pj_height
+
+    @property
+    def zone_width(self) -> int:
+        return self.table_width // self.zone_count
+
+    @property
+    def zone_height(self) -> int:
+        return self.pj_height
+
+    def zone_box(self, zone_id: int) -> dict:
+        """zone_id (1-indexed) の {x,y,w,h} を返す。"""
+        if zone_id < 1 or zone_id > self.zone_count:
+            raise ValueError(f"zone_id out of range: {zone_id} (1..{self.zone_count})")
+        return {
+            "x": self.zone_width * (zone_id - 1),
+            "y": 0,
+            "w": self.zone_width,
+            "h": self.zone_height,
+        }
+
+    def pj_regions(self) -> list[dict]:
+        """各プロジェクターの切り出し座標を返す。"""
+        regions: list[dict] = []
+        for i in range(self.pj_count):
+            x = i * (self.pj_width - self.blend_overlap)
+            regions.append({"name": f"pj{i + 1}", "x": x, "w": self.pj_width})
+        return regions
+
+
+DEFAULT_LAYOUT = LayoutSpec()
+
+
+# ─── ゾーン座標 (後方互換) ──────────────────────────────────────
 ZONES = {
     "all": {"x": 0, "y": 0, "w": TABLE_WIDTH, "h": TABLE_HEIGHT},
     "1": {"x": 0, "y": 0, "w": ZONE_WIDTH, "h": ZONE_HEIGHT},
@@ -67,108 +136,141 @@ ZONES = {
     "4": {"x": ZONE_WIDTH * 3, "y": 0, "w": ZONE_WIDTH, "h": ZONE_HEIGHT},
 }
 
-# プロジェクター切り出し座標
-PJ_REGIONS = [
-    {"name": "pj1", "x": 0, "w": PJ_WIDTH},
-    {"name": "pj2", "x": PJ_WIDTH - BLEND_OVERLAP, "w": PJ_WIDTH},
-    {"name": "pj3", "x": (PJ_WIDTH - BLEND_OVERLAP) * 2, "w": PJ_WIDTH},
-]
+# プロジェクター切り出し座標 (後方互換)
+PJ_REGIONS = DEFAULT_LAYOUT.pj_regions()
+
+
+# ─── ffmpeg / ffprobe 検出 ───────────────────────────────────
+
+def has_ffmpeg_sync() -> bool:
+    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 
 
 async def check_ffmpeg() -> bool:
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-version",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+    return has_ffmpeg_sync()
+
+
+def _require_ffmpeg() -> None:
+    if not has_ffmpeg_sync():
+        raise CompositorError(
+            "ffmpeg/ffprobe not found in PATH. Install via `brew install ffmpeg` "
+            "(macOS) or `apt-get install ffmpeg`."
         )
-        await proc.communicate()
-        return proc.returncode == 0
-    except FileNotFoundError:
-        return False
+
+
+def _parse_framerate(rate: str) -> float:
+    """ffprobe の r_frame_rate ("30000/1001" 形式) を float fps に変換する。
+
+    eval() は使わない。parse 失敗時は CompositorError を投げる。
+    """
+    try:
+        frac = Fraction(rate)
+        return float(frac)
+    except (ZeroDivisionError, ValueError, TypeError) as e:
+        raise CompositorError(f"Invalid framerate '{rate}': {e}")
 
 
 async def get_video_info(path: str) -> dict:
+    """ffprobe で映像情報を取得する。失敗時は CompositorError。"""
+    _require_ffmpeg()
     cmd = [
         "ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", path,
     ]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise CompositorError(
+            f"ffprobe failed for {path}: {stderr.decode(errors='replace')[-500:]}"
         )
-        stdout, _ = await proc.communicate()
+
+    try:
         info = json.loads(stdout.decode())
-        for s in info.get("streams", []):
-            if s.get("codec_type") == "video":
-                return {
-                    "width": int(s["width"]),
-                    "height": int(s["height"]),
-                    "duration": float(s.get("duration", 0)),
-                    "fps": eval(s.get("r_frame_rate", "30/1")),
-                }
-    except Exception as e:
-        print(f"[Compositor] ffprobe error: {e}")
-    return {"width": 0, "height": 0, "duration": 0, "fps": 30}
+    except json.JSONDecodeError as e:
+        raise CompositorError(f"ffprobe returned invalid JSON for {path}: {e}")
+
+    for s in info.get("streams", []):
+        if s.get("codec_type") == "video":
+            return {
+                "width": int(s["width"]),
+                "height": int(s["height"]),
+                "duration": float(s.get("duration", 0)),
+                "fps": _parse_framerate(s.get("r_frame_rate", "30/1")),
+            }
+    raise CompositorError(f"No video stream found in {path}")
+
+
+def _resolve_layout(layout: Optional[LayoutSpec]) -> LayoutSpec:
+    if layout is None:
+        return DEFAULT_LAYOUT
+    return layout
 
 
 # ====================================================================
-# 1. 統一モード合成: 21:9 L + R → 5520x1200
+# 1. 統一モード合成: 21:9 L + R → table_width x table_height
 # ====================================================================
 
 async def stitch_unified(
     left_path: str,
     right_path: str,
     output_path: str,
+    layout: Optional[LayoutSpec] = None,
 ) -> str:
     """
-    左右2セグメント (21:9, 各3840x1080) を合成して 5520x1200 にする。
+    左右2セグメント (21:9, 各3840x1080) を合成して layout.table_width x table_height に。
 
     手順:
-    1. 各セグメントを縦方向にスケール: 1080 → 1200 (+11%)
-       → 各セグメントは 4267x1200 になる
-    2. 左セグメントの右端20%と右セグメントの左端20%をクロスフェードブレンド
-    3. 合成して 5520x1200 に仕上げ
+    1. 各セグメントを縦方向にスケール: 1080 → table_height
+       → 各セグメントは scale_w x table_height になる
+    2. 左セグメントの右端 overlap_ratio% と右セグメントの左端 overlap_ratio% を
+       blend マスクで真の crossfade 合成 (xstack による単なる重ね合わせではない)
+    3. crop して table_width x table_height に仕上げる
     """
+    spec = _resolve_layout(layout)
+    table_w = spec.table_width
+    table_h = spec.table_height
+
     print(f"[Stitch] L: {left_path}")
     print(f"[Stitch] R: {right_path}")
     print(f"[Stitch] → {output_path}")
+    print(f"[Stitch] target: {table_w}x{table_h}")
 
-    has_ffmpeg = await check_ffmpeg()
-    if not has_ffmpeg:
-        return await _create_stitch_metadata(left_path, right_path, output_path)
-
+    _require_ffmpeg()
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # 縦スケール比: 1200/1080 = 1.111
-    scale_h = TABLE_HEIGHT
-    scale_w = int(SEGMENT_W * (TABLE_HEIGHT / SEGMENT_H))  # 4267
+    # 縦スケール比: table_height/SEGMENT_H
+    scale_h = table_h
+    scale_w = int(SEGMENT_W * (table_h / SEGMENT_H))
 
-    # オーバーラップ幅 (px)
-    overlap_px = int(scale_w * SEGMENT_OVERLAP_RATIO)  # ~853px
+    # オーバーラップ幅 (px) — 合成後の幅が table_w になるように逆算
+    # 合成後の幅 = 2 * scale_w - overlap_px = table_w が理想だが、
+    # scale_w が大きい場合は overlap_px を増やし、それでも余る場合は crop で吸収。
+    natural_overlap = 2 * scale_w - table_w
+    overlap_px = max(int(scale_w * SEGMENT_OVERLAP_RATIO), natural_overlap)
+    if overlap_px >= scale_w:
+        raise CompositorError(
+            f"Computed overlap {overlap_px}px exceeds segment width {scale_w}px; "
+            f"check SEGMENT_OVERLAP_RATIO / segment resolution."
+        )
 
-    # 合成後の幅: 2 × scale_w - overlap_px
-    # = 2 × 4267 - 853 = 7681 → crop to 5520
-    # 実際は: 左の非重複部 + ブレンド部 + 右の非重複部 = 5520
-    left_unique = (TABLE_WIDTH - overlap_px) // 2     # 左の固有部分
-    right_unique = TABLE_WIDTH - left_unique - overlap_px
-
-    # ffmpegフィルター:
-    # [0] left → scale to scale_w x 1200
-    # [1] right → scale to scale_w x 1200
-    # [0scaled] crop left portion (left_unique + overlap_px) wide
-    # [1scaled] crop right portion from start
-    # blend overlap region with crossfade
+    # filter graph:
+    # [0] L → scale → put at x=0
+    # [1] R → scale → overlay at x=scale_w - overlap_px with alpha gradient
+    # ブレンドマスクは overlap 領域内で 0→1 に線形変化
+    overlay_x = scale_w - overlap_px
+    fade_w = overlap_px
+    # 右映像の alpha チャンネルを overlap 部分でグラデーション、それ以外は1.0
+    # geq の X は出力フレーム座標。0..fade_w が overlap 内。
+    alpha_expr = (
+        f"if(lt(X,{fade_w}),X/{fade_w},1)"
+    )
     filter_complex = (
-        f"[0:v]scale={scale_w}:{scale_h}[lscaled];"
-        f"[1:v]scale={scale_w}:{scale_h}[rscaled];"
-        # 左から必要な幅を切り出し
-        f"[lscaled]crop={left_unique + overlap_px}:{scale_h}:0:0[lcrop];"
-        # 右から必要な幅を切り出し (右端から)
-        f"[rscaled]crop={overlap_px + right_unique}:{scale_h}:{scale_w - overlap_px - right_unique}:0[rcrop];"
-        # xfade でオーバーレイ (横方向オーバーラップ)
-        f"[lcrop][rcrop]xstack=inputs=2:layout=0_0|{left_unique}_0[wide];"
-        # 最終的に TABLE_WIDTH にクロップ
-        f"[wide]crop={TABLE_WIDTH}:{TABLE_HEIGHT}:0:0"
+        f"[0:v]scale={scale_w}:{scale_h},setpts=PTS-STARTPTS[lscaled];"
+        f"[1:v]scale={scale_w}:{scale_h},setpts=PTS-STARTPTS,format=yuva444p,"
+        f"geq=lum='p(X,Y)':a='255*({alpha_expr})'[rfaded];"
+        f"[lscaled][rfaded]overlay=x={overlay_x}:y=0:shortest=1:format=auto[merged];"
+        f"[merged]crop={table_w}:{table_h}:0:0,format=yuv420p"
     )
 
     cmd = [
@@ -177,6 +279,7 @@ async def stitch_unified(
         "-i", right_path,
         "-filter_complex", filter_complex,
         "-c:v", "libx264", "-preset", "fast", "-crf", "16",
+        "-pix_fmt", "yuv420p",
         "-an",
         output_path,
     ]
@@ -187,56 +290,50 @@ async def stitch_unified(
     _, stderr = await proc.communicate()
 
     if proc.returncode != 0:
-        print(f"[Stitch] ffmpeg error: {stderr.decode()[-500:]}")
-        return await _create_stitch_metadata(left_path, right_path, output_path)
+        raise CompositorError(
+            f"stitch_unified ffmpeg failed (rc={proc.returncode}): "
+            f"{stderr.decode(errors='replace')[-500:]}"
+        )
 
-    print(f"[Stitch] Output: {output_path} ({TABLE_WIDTH}x{TABLE_HEIGHT})")
+    # 出力検証: 解像度が想定通りか確認
+    info = await get_video_info(output_path)
+    if info["width"] != table_w or info["height"] != table_h:
+        raise CompositorError(
+            f"stitch output resolution mismatch: got {info['width']}x{info['height']}, "
+            f"expected {table_w}x{table_h}"
+        )
+
+    print(f"[Stitch] Output: {output_path} ({info['width']}x{info['height']}, {info['duration']:.1f}s)")
     return output_path
 
 
-async def _create_stitch_metadata(left: str, right: str, output: str) -> str:
-    meta = {
-        "left_segment": left,
-        "right_segment": right,
-        "target": f"{TABLE_WIDTH}x{TABLE_HEIGHT}",
-        "method": "21:9 x2 → stitch with 20% overlap → 5520x1200",
-        "status": "metadata_only",
-        "note": "ffmpegインストール後に実行: brew install ffmpeg",
-    }
-    meta_path = Path(output).with_suffix('.json')
-    Path(output).parent.mkdir(parents=True, exist_ok=True)
-    with open(meta_path, 'w', encoding='utf-8') as f:
-        json.dump(meta, f, indent=2, ensure_ascii=False)
-    Path(output).touch()
-    print(f"[Stitch] Metadata: {meta_path}")
-    return output
-
-
 # ====================================================================
-# 2. 区画モード: 1:1 → 1380x1200
+# 2. 区画モード: 1:1 → zone_width x zone_height
 # ====================================================================
 
-async def fit_zone(input_path: str, output_path: str) -> str:
+async def fit_zone(
+    input_path: str,
+    output_path: str,
+    layout: Optional[LayoutSpec] = None,
+) -> str:
     """
-    1:1 正方形映像 (2160x2160 4K) を区画サイズ 1380x1200 にフィット。
+    1:1 正方形映像 (2160x2160 4K) を区画サイズ zone_width x zone_height にフィット。
 
     手順:
-    1. 中心から 1380x1200 相当の領域をクロップ
-       (2160から → crop 1380:1200 の比率でスケール)
-    2. まず 2160x2160 → 1380 幅にスケール → 高さ 1380 → crop 1200
+    1. width = zone_width にスケール (アスペクト維持)
+    2. 中央クロップで height = zone_height に切り出す
     """
-    print(f"[ZoneFit] {input_path} → {output_path}")
+    spec = _resolve_layout(layout)
+    zone_w = spec.zone_width
+    zone_h = spec.zone_height
+    print(f"[ZoneFit] {input_path} → {output_path} ({zone_w}x{zone_h})")
 
-    has_ffmpeg = await check_ffmpeg()
-    if not has_ffmpeg:
-        return await _create_zone_metadata(input_path, output_path)
-
+    _require_ffmpeg()
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # scale to width=1380, then crop height to 1200 (center crop)
     filter_str = (
-        f"scale={ZONE_WIDTH}:-1,"
-        f"crop={ZONE_WIDTH}:{ZONE_HEIGHT}"
+        f"scale={zone_w}:-1,"
+        f"crop={zone_w}:{zone_h}"
     )
 
     cmd = [
@@ -244,6 +341,7 @@ async def fit_zone(input_path: str, output_path: str) -> str:
         "-i", input_path,
         "-vf", filter_str,
         "-c:v", "libx264", "-preset", "fast", "-crf", "16",
+        "-pix_fmt", "yuv420p",
         "-an",
         output_path,
     ]
@@ -254,62 +352,88 @@ async def fit_zone(input_path: str, output_path: str) -> str:
     _, stderr = await proc.communicate()
 
     if proc.returncode != 0:
-        print(f"[ZoneFit] ffmpeg error: {stderr.decode()[-500:]}")
-        return await _create_zone_metadata(input_path, output_path)
+        raise CompositorError(
+            f"fit_zone ffmpeg failed (rc={proc.returncode}): "
+            f"{stderr.decode(errors='replace')[-500:]}"
+        )
 
-    print(f"[ZoneFit] Output: {output_path} ({ZONE_WIDTH}x{ZONE_HEIGHT})")
+    info = await get_video_info(output_path)
+    if info["width"] != zone_w or info["height"] != zone_h:
+        raise CompositorError(
+            f"zone-fit output resolution mismatch: got {info['width']}x{info['height']}, "
+            f"expected {zone_w}x{zone_h}"
+        )
+    print(f"[ZoneFit] Output: {output_path} ({info['width']}x{info['height']})")
     return output_path
-
-
-async def _create_zone_metadata(input_path: str, output: str) -> str:
-    meta = {
-        "input": input_path,
-        "target": f"{ZONE_WIDTH}x{ZONE_HEIGHT}",
-        "method": "1:1 (2160x2160) → scale to 1380w → center crop 1380x1200",
-        "status": "metadata_only",
-    }
-    meta_path = Path(output).with_suffix('.json')
-    Path(output).parent.mkdir(parents=True, exist_ok=True)
-    with open(meta_path, 'w', encoding='utf-8') as f:
-        json.dump(meta, f, indent=2, ensure_ascii=False)
-    Path(output).touch()
-    return output
 
 
 # ====================================================================
 # 3. プロジェクター分割: 全体映像 → PJ1/PJ2/PJ3
 # ====================================================================
 
-async def split_for_projectors(input_path: str, output_dir: str) -> list[str]:
-    """5520x1200 全体映像を 3台プロジェクター用に分割（エッジブレンド重なり含む）"""
+async def split_for_projectors(
+    input_path: str,
+    output_dir: str,
+    layout: Optional[LayoutSpec] = None,
+) -> list[str]:
+    """全体映像を pj_count 台プロジェクター用に分割（エッジブレンド重なり含む）
+
+    各 ffmpeg の returncode を検証し、出力解像度を ffprobe で再確認する。
+    1台でも失敗すれば CompositorError を投げる。
+    """
+    _require_ffmpeg()
+    spec = _resolve_layout(layout)
     output_dir_path = Path(output_dir)
     output_dir_path.mkdir(parents=True, exist_ok=True)
 
-    outputs = []
+    outputs: list[str] = []
     stem = Path(input_path).stem
-    has_ffmpeg = await check_ffmpeg()
+    errors: list[str] = []
 
-    for region in PJ_REGIONS:
+    for region in spec.pj_regions():
         output_path = str(output_dir_path / f"{stem}_{region['name']}.mp4")
 
-        if has_ffmpeg:
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", input_path,
-                "-vf", f"crop={region['w']}:{TABLE_HEIGHT}:{region['x']}:0",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "16",
-                output_path,
-            ]
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-vf", f"crop={region['w']}:{spec.table_height}:{region['x']}:0",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "16",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            output_path,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            errors.append(
+                f"{region['name']}: ffmpeg rc={proc.returncode} – "
+                f"{stderr.decode(errors='replace')[-300:]}"
             )
-            await proc.communicate()
-        else:
-            Path(output_path).touch()
+            continue
+
+        try:
+            info = await get_video_info(output_path)
+        except CompositorError as e:
+            errors.append(f"{region['name']}: ffprobe failed – {e}")
+            continue
+
+        if info["width"] != region["w"] or info["height"] != spec.table_height:
+            errors.append(
+                f"{region['name']}: resolution mismatch "
+                f"got {info['width']}x{info['height']}, "
+                f"expected {region['w']}x{spec.table_height}"
+            )
+            continue
 
         outputs.append(output_path)
         print(f"[Split] {region['name']}: x={region['x']}, w={region['w']} → {output_path}")
 
+    if errors:
+        raise CompositorError(
+            "split_for_projectors had failures:\n  - " + "\n  - ".join(errors)
+        )
     return outputs
 
 
@@ -317,36 +441,29 @@ async def split_for_projectors(input_path: str, output_dir: str) -> list[str]:
 # レイアウト情報
 # ====================================================================
 
-def print_layout_info():
+def print_layout_info(layout: Optional[LayoutSpec] = None):
+    spec = _resolve_layout(layout)
+    table_w = spec.table_width
+    table_h = spec.table_height
+    aspect = table_w / table_h
+    zone_w = spec.zone_width
+    zone_h = spec.zone_height
     print(f"""
 ╔══════════════════════════════════════════════════════════════════╗
 ║          イマーシブダイニング テーブルレイアウト v2                ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║                                                                  ║
-║  テーブル全長: 8,126mm （4区画 × 2名）                            ║
-║  投影解像度:   {TABLE_WIDTH} x {TABLE_HEIGHT} px                            ║
-║  アスペクト比: {TABLE_ASPECT:.1f}:1 (超ワイド)                              ║
+║  テーブル全長: 8,126mm （{spec.zone_count}区画 × 2名）                            ║
+║  投影解像度:   {table_w} x {table_h} px                            ║
+║  アスペクト比: {aspect:.1f}:1 (超ワイド)                              ║
 ║                                                                  ║
-║  ┌──────────┬──────────┬──────────┬──────────┐                   ║
-║  │  Zone 1  │  Zone 2  │  Zone 3  │  Zone 4  │                   ║
-║  │{ZONE_WIDTH}x{ZONE_HEIGHT} │{ZONE_WIDTH}x{ZONE_HEIGHT} │{ZONE_WIDTH}x{ZONE_HEIGHT} │{ZONE_WIDTH}x{ZONE_HEIGHT} │                   ║
-║  └──────────┴──────────┴──────────┴──────────┘                   ║
+║  Zone size:    {zone_w} x {zone_h} px × {spec.zone_count} 区画                  ║
 ║                                                                  ║
-║  Projector Coverage ({BLEND_OVERLAP}px overlap):                            ║
-║  [PJ1: 0—{PJ_WIDTH}] [PJ2: {PJ_WIDTH-BLEND_OVERLAP}—{PJ_WIDTH*2-BLEND_OVERLAP}] [PJ3: {(PJ_WIDTH-BLEND_OVERLAP)*2}—{TABLE_WIDTH+BLEND_OVERLAP}]      ║
-║                                                                  ║
-║  ─── 生成戦略 ───────────────────────────────────────────────    ║
-║                                                                  ║
-║  統一モード (unified):                                            ║
-║    Runway 21:9 × 2セグメント(L+R) → 4K upscale                   ║
-║    → 3840x1080 × 2 → stitch → {TABLE_WIDTH}x{TABLE_HEIGHT}                  ║
-║                                                                  ║
-║  区画モード (zone):                                               ║
-║    1:1 正方形 → 4K upscale → 2160x2160                           ║
-║    → crop {ZONE_WIDTH}x{ZONE_HEIGHT}                                        ║
-║                                                                  ║
-╚══════════════════════════════════════════════════════════════════╝
+║  Projector Coverage ({spec.blend_overlap}px overlap):                            ║
 """)
+    for r in spec.pj_regions():
+        print(f"║  [{r['name']:>3}: {r['x']}–{r['x']+r['w']}]")
+    print("╚══════════════════════════════════════════════════════════════════╝")
 
 
 # ====================================================================
@@ -358,34 +475,34 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="コンテンツコンポジター v2")
     subparsers = parser.add_subparsers(dest="command")
 
-    # 統一モード合成
-    stitch_parser = subparsers.add_parser("stitch", help="21:9 L+R → 5520x1200 合成")
+    stitch_parser = subparsers.add_parser("stitch", help="21:9 L+R → table_width x table_height 合成")
     stitch_parser.add_argument("--left", required=True, help="左セグメント映像")
     stitch_parser.add_argument("--right", required=True, help="右セグメント映像")
     stitch_parser.add_argument("--output", required=True, help="出力パス")
 
-    # 区画モードフィット
-    zone_parser = subparsers.add_parser("zone-fit", help="1:1 → 1380x1200 フィット")
+    zone_parser = subparsers.add_parser("zone-fit", help="1:1 → zone_width x zone_height フィット")
     zone_parser.add_argument("--input", required=True)
     zone_parser.add_argument("--output", required=True)
 
-    # 3PJ分割
     split_parser = subparsers.add_parser("split", help="3プロジェクター分割")
     split_parser.add_argument("--input", required=True)
     split_parser.add_argument("--output-dir", default="/tmp/pj_split")
 
-    # レイアウト
     subparsers.add_parser("info", help="レイアウト情報表示")
 
     args = parser.parse_args()
 
-    if args.command == "stitch":
-        asyncio.run(stitch_unified(args.left, args.right, args.output))
-    elif args.command == "zone-fit":
-        asyncio.run(fit_zone(args.input, args.output))
-    elif args.command == "split":
-        asyncio.run(split_for_projectors(args.input, args.output_dir))
-    elif args.command == "info":
-        print_layout_info()
-    else:
-        parser.print_help()
+    try:
+        if args.command == "stitch":
+            asyncio.run(stitch_unified(args.left, args.right, args.output))
+        elif args.command == "zone-fit":
+            asyncio.run(fit_zone(args.input, args.output))
+        elif args.command == "split":
+            asyncio.run(split_for_projectors(args.input, args.output_dir))
+        elif args.command == "info":
+            print_layout_info()
+        else:
+            parser.print_help()
+    except CompositorError as e:
+        print(f"[Compositor] ERROR: {e}")
+        raise SystemExit(2)

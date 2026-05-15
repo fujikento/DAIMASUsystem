@@ -422,14 +422,15 @@ class VideoGeneratorService:
             prompt_modifier=prompt_modifier,
         )
 
-        # 出力パス
+        # 出力パス — job_id を含めて並行生成時の上書き衝突を防ぐ。
+        # 「current」リンクは別関数 (publish_artifact) で atomic に切り替える。
         if mode == GenerationMode.UNIFIED:
             seg_label = f"_{segment}" if segment else ""
-            filename = f"{course}{seg_label}.mp4"
+            filename = f"{course}{seg_label}__{job_id}.mp4"
             aspect_ratio = "21:9"
         else:
             zone_label = f"_zone{zone_id}" if zone_id else ""
-            filename = f"{course}{zone_label}.mp4"
+            filename = f"{course}{zone_label}__{job_id}.mp4"
             aspect_ratio = "1:1"
 
         output_path = str(self.output_dir / theme / mode.value / filename)
@@ -513,10 +514,16 @@ class VideoGeneratorService:
         # Try to find a seed image for image-to-video mode
         seed_image_b64 = await self._find_seed_image(job)
 
-        # Runway only supports 16:9, 9:16, 1:1 — map 21:9 → 16:9
+        # Runway は 16:9 / 9:16 / 1:1 のみ。unified モード (21:9) を Runway で
+        # 走らせると合成パイプラインのアスペクト前提と食い違うので、ここで
+        # 明示的にエラーにする。unified モードを使いたい場合は fal/kling などの
+        # 21:9 対応プロバイダを選ぶ。
         runway_ratio = job.aspect_ratio
         if runway_ratio == "21:9":
-            runway_ratio = "16:9"
+            raise RuntimeError(
+                "Runway provider does not support 21:9 (unified mode requires 21:9). "
+                "Switch provider to fal/kling or use zone mode (1:1)."
+            )
 
         # Build the request payload
         if seed_image_b64:
@@ -621,44 +628,26 @@ class VideoGeneratorService:
         )
 
     async def _find_seed_image(self, job: GenerationJob) -> Optional[str]:
-        """Look for a seed image to use for image-to-video generation.
+        """Look for a seed image for image-to-video generation.
 
-        Priority:
-        1. Explicit seed_image_path set on the job.
-        2. Most recent preview image from the previews directory.
+        DETERMINISTIC ONLY: 明示的に job.seed_image_path が指定されている場合だけ
+        使う。「previews ディレクトリの最新 jpg」のような fallback は別 scene の
+        seed を拾って AI 出力が theme/course と食い違う事故を起こすので削除した。
 
         Returns the image as a base64-encoded JPEG string, or None if not found.
         """
-        seed_path: Optional[Path] = None
+        if not job.seed_image_path:
+            return None
 
-        # Priority 1: explicit seed image path from the job
-        if job.seed_image_path:
-            p = Path(job.seed_image_path)
-            if p.exists() and p.stat().st_size > 100:
-                seed_path = p
-
-        # Priority 2: scan previews directory
-        if seed_path is None:
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            previews_dir = Path(project_root) / "touchdesigner" / "content" / "previews"
-            if previews_dir.exists():
-                candidates = sorted(
-                    previews_dir.glob("*.jpg"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                for c in candidates:
-                    if c.stat().st_size > 100:
-                        seed_path = c
-                        break
-
-        if seed_path is None:
+        p = Path(job.seed_image_path)
+        if not p.exists() or p.stat().st_size <= 100:
+            print(f"[VideoGen] Seed image not usable: {job.seed_image_path}")
             return None
 
         try:
-            with open(seed_path, "rb") as f:
+            with open(p, "rb") as f:
                 image_bytes = f.read()
-            print(f"[VideoGen] Using seed image: {seed_path.name} ({len(image_bytes) / 1024:.0f}KB)")
+            print(f"[VideoGen] Using seed image: {p.name} ({len(image_bytes) / 1024:.0f}KB)")
             return base64.b64encode(image_bytes).decode("ascii")
         except Exception as e:
             print(f"[VideoGen] Failed to read seed image: {e}")
@@ -703,7 +692,13 @@ class VideoGeneratorService:
 
         model = "fal-ai/kling-video/v2.1/standard/image-to-video"
 
-        # Map aspect ratio for Kling — supports 16:9, 9:16, 1:1
+        # Map aspect ratio for Kling — supports 16:9, 9:16, 1:1。
+        # 21:9 (unified mode) は compositor の前提が崩れるので silent downgrade せず raise。
+        if job.aspect_ratio == "21:9":
+            raise RuntimeError(
+                "fal.ai Kling does not support 21:9 (unified mode requires 21:9). "
+                "Use zone mode (1:1) or a 21:9-capable provider."
+            )
         fal_aspect = "16:9"
         if job.aspect_ratio == "1:1":
             fal_aspect = "1:1"
@@ -792,21 +787,24 @@ class VideoGeneratorService:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
 
     async def _generate_kling(self, job: GenerationJob):
-        """Kling API — 16:9 or 1:1（21:9非対応のため統一モードは非推奨）"""
+        """Kling API — 16:9 or 1:1。21:9 (unified) は compositor 前提が崩れるので raise。"""
         if job.mode == GenerationMode.UNIFIED:
-            print("[VideoGen] Warning: Kling does not support 21:9. Falling back to 16:9.")
-            job.aspect_ratio = "16:9"
-
+            raise RuntimeError(
+                "Kling does not support 21:9 (unified mode). Use zone mode (1:1) or "
+                "a 21:9-capable provider."
+            )
         if not self.kling_api_key:
             await self._create_placeholder(job)
             return
         await self._create_placeholder(job)
 
     async def _generate_pika(self, job: GenerationJob):
-        """Pika API — 16:9 or 1:1"""
+        """Pika API — 16:9 or 1:1。21:9 (unified) 非対応のため raise。"""
         if job.mode == GenerationMode.UNIFIED:
-            print("[VideoGen] Warning: Pika does not support 21:9. Falling back to 16:9.")
-            job.aspect_ratio = "16:9"
+            raise RuntimeError(
+                "Pika does not support 21:9 (unified mode). Use zone mode (1:1) or "
+                "a 21:9-capable provider."
+            )
         await self._create_placeholder(job)
 
     async def _create_placeholder(self, job: GenerationJob):

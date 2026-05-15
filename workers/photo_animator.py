@@ -36,6 +36,7 @@ class AnimationStatus(str, Enum):
     PROCESSING = "processing"
     COMPOSITING = "compositing"
     COMPLETE = "complete"
+    PLACEHOLDER = "placeholder"  # 実生成スタックが未構成のため、メタデータのみ
     FAILED = "failed"
 
 
@@ -107,24 +108,37 @@ class AnimationJob:
     completed_at: Optional[float] = None
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
 class PhotoAnimatorService:
-    """写真アニメーション生成サービス"""
+    """写真アニメーション生成サービス。
+
+    ハードコード `/Users/kento/...` を排除し、プロジェクトルートからの相対 +
+    環境変数で上書き可能にする (portability fix)。
+    """
 
     def __init__(
         self,
-        templates_dir: str = "/Users/kento/immersive-dining/touchdesigner/content/templates",
-        output_dir: str = "/Users/kento/immersive-dining/api/uploads/birthday_videos",
+        templates_dir: Optional[str] = None,
+        output_dir: Optional[str] = None,
     ):
-        self.templates_dir = Path(templates_dir)
-        self.output_dir = Path(output_dir)
+        default_templates = _PROJECT_ROOT / "touchdesigner" / "content" / "templates"
+        default_output = _PROJECT_ROOT / "api" / "uploads" / "birthday_videos"
+        self.templates_dir = Path(
+            templates_dir or os.environ.get("PHOTO_TEMPLATES_DIR", str(default_templates))
+        )
+        self.output_dir = Path(
+            output_dir or os.environ.get("PHOTO_OUTPUT_DIR", str(default_output))
+        )
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.jobs: dict[str, AnimationJob] = {}
         self._job_counter = 0
 
-        # LivePortrait設定
+        # LivePortrait 設定 (環境変数優先)
         self.liveportrait_path = os.environ.get(
             "LIVEPORTRAIT_PATH",
-            "/Users/kento/LivePortrait"
+            str(_PROJECT_ROOT.parent / "LivePortrait"),
         )
 
     def create_job(
@@ -160,7 +174,12 @@ class PhotoAnimatorService:
         return job
 
     async def process(self, job: AnimationJob) -> AnimationJob:
-        """アニメーション生成フルパイプライン"""
+        """アニメーション生成フルパイプライン。
+
+        LivePortrait/Hedra/ffmpeg 合成が未構成の場合は status=PLACEHOLDER で返す。
+        COMPLETE は実 mp4 が生成されたときのみ。silent empty-file 成功を避ける。
+        """
+        is_placeholder = False
         try:
             # Step 1: 写真→アニメーション生成
             job.status = AnimationStatus.PROCESSING
@@ -169,19 +188,27 @@ class PhotoAnimatorService:
             print(f"[PhotoAnim] Template: {job.template_id}")
 
             if job.provider == AnimationProvider.LIVEPORTRAIT:
-                await self._animate_liveportrait(job)
+                step1_placeholder = await self._animate_liveportrait(job)
             elif job.provider == AnimationProvider.HEDRA:
-                await self._animate_hedra(job)
+                step1_placeholder = await self._animate_hedra(job)
+            else:
+                step1_placeholder = True
+            is_placeholder = is_placeholder or bool(step1_placeholder)
 
             # Step 2: テンプレート映像に合成
             job.status = AnimationStatus.COMPOSITING
-            await self._composite(job)
+            step2_placeholder = await self._composite(job)
+            is_placeholder = is_placeholder or bool(step2_placeholder)
 
-            job.status = AnimationStatus.COMPLETE
+            if is_placeholder:
+                job.status = AnimationStatus.PLACEHOLDER
+                print(f"[PhotoAnim] Placeholder: {job.job_id} (LivePortrait/ffmpeg not configured)")
+            else:
+                job.status = AnimationStatus.COMPLETE
+                print(f"[PhotoAnim] Complete: {job.job_id}")
             job.completed_at = time.time()
             elapsed = job.completed_at - job.created_at
-            print(f"[PhotoAnim] Complete: {job.job_id} ({elapsed:.1f}s)")
-            print(f"[PhotoAnim] Output: {job.final_output_path}")
+            print(f"[PhotoAnim] Output: {job.final_output_path} (status={job.status.value}, {elapsed:.1f}s)")
 
         except Exception as e:
             job.status = AnimationStatus.FAILED
@@ -190,8 +217,13 @@ class PhotoAnimatorService:
 
         return job
 
-    async def _animate_liveportrait(self, job: AnimationJob):
-        """LivePortraitでアニメーション生成"""
+    async def _animate_liveportrait(self, job: AnimationJob) -> bool:
+        """LivePortraitでアニメーション生成。
+
+        Returns:
+            True  -- LivePortrait 未構成のためプレースホルダを返した
+            False -- 実 mp4 が生成された
+        """
         template = BIRTHDAY_TEMPLATES[job.template_id]
         driving_video = str(self.templates_dir / template["driving_video"])
 
@@ -202,7 +234,7 @@ class PhotoAnimatorService:
         if not liveportrait_dir.exists():
             print("[PhotoAnim] LivePortrait not installed, creating placeholder")
             await self._create_placeholder(job, animated_path)
-            return
+            return True
 
         # LivePortrait実行コマンド
         # cmd = [
@@ -222,10 +254,12 @@ class PhotoAnimatorService:
         # if process.returncode != 0:
         #     raise Exception(f"LivePortrait failed: {stderr.decode()}")
 
+        # 実コマンドが未配線なので現状は placeholder。実装後に False を返すように。
         await self._create_placeholder(job, animated_path)
+        return True
 
-    async def _animate_hedra(self, job: AnimationJob):
-        """Hedra AIでアニメーション生成"""
+    async def _animate_hedra(self, job: AnimationJob) -> bool:
+        """Hedra AIでアニメーション生成。返り値は placeholder か否か。"""
         animated_path = str(self.output_dir / f"{job.job_id}_animated.mp4")
         job.animated_portrait_path = animated_path
 
@@ -233,7 +267,7 @@ class PhotoAnimatorService:
         if not hedra_api_key:
             print("[PhotoAnim] Hedra API key not set, creating placeholder")
             await self._create_placeholder(job, animated_path)
-            return
+            return True
 
         # Hedra API呼び出し
         # import httpx
@@ -255,10 +289,12 @@ class PhotoAnimatorService:
         #     with open(animated_path, 'wb') as f:
         #         f.write(video_resp.content)
 
+        # 実コマンドが未配線なので現状は placeholder。実装後に False を返すように。
         await self._create_placeholder(job, animated_path)
+        return True
 
-    async def _composite(self, job: AnimationJob):
-        """アニメーションをテンプレート背景に合成 → 区画サイズ (1380x1200) で出力"""
+    async def _composite(self, job: AnimationJob) -> bool:
+        """アニメーションをテンプレート背景に合成 → 区画サイズで出力。返り値は placeholder か否か。"""
         template = BIRTHDAY_TEMPLATES[job.template_id]
 
         print(f"[PhotoAnim] Compositing: {template['name']} → Zone {job.zone_id} ({job.target_width}x{job.target_height})")
@@ -288,8 +324,23 @@ class PhotoAnimatorService:
         # )
         # await process.communicate()
 
-        # プレースホルダ
-        Path(job.final_output_path).touch()
+        # 実 ffmpeg 合成は未配線 — メタデータのみの placeholder を返す。
+        # 0 バイト mp4 を作らない (それを再生すると下流の compositor/projector が
+        # silent failure になるため)。
+        meta = Path(job.final_output_path).with_suffix('.json')
+        Path(job.final_output_path).parent.mkdir(parents=True, exist_ok=True)
+        meta.write_text(
+            json.dumps({
+                "job_id": job.job_id,
+                "template": job.template_id,
+                "target": f"{job.target_width}x{job.target_height}",
+                "status": "placeholder",
+                "note": "Wire actual ffmpeg composite to produce a real mp4.",
+            }, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        # final_output_path には実ファイルを置かない (path だけ予約)。
+        return True
 
     async def _create_placeholder(self, job: AnimationJob, output_path: str):
         """プレースホルダ作成"""

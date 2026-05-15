@@ -734,6 +734,9 @@ class ShowStatusResponse(BaseModel):
     elapsed_in_cue: float = 0.0
     total_cues: int = 0
     completed_cues: int = 0
+    # 直近の cue で OSC が失敗していた場合、UI に degraded 表示するためのフィールド
+    degraded: bool = False
+    last_osc_error: Optional[str] = None
 
 
 # ─── Analytics ORM Models ─────────────────────────────────────────────────────
