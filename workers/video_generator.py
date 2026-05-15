@@ -687,8 +687,14 @@ class VideoGeneratorService:
         seed_root = Path(os.environ.get("SEED_IMAGES_ROOT", str(default_seed_root))).resolve()
         allowed_exts = {".jpg", ".jpeg", ".png", ".webp"}
 
+        # 入力パス自体が symlink ならその時点で拒否 (codex round 5 厳密化)
+        input_path = Path(job.seed_image_path)
+        if input_path.is_symlink():
+            print(f"[VideoGen] Seed image path is a symlink (rejected): {input_path}")
+            return None
+
         try:
-            resolved = Path(job.seed_image_path).resolve(strict=False)
+            resolved = input_path.resolve(strict=False)
         except (OSError, RuntimeError) as e:
             print(f"[VideoGen] Seed image resolve failed: {e}")
             return None
@@ -699,30 +705,47 @@ class VideoGeneratorService:
             print(f"[VideoGen] Seed image outside SEED_IMAGES_ROOT ({seed_root}): {resolved}")
             return None
 
-        if not resolved.is_file():
-            print(f"[VideoGen] Seed image not a regular file: {resolved}")
-            return None
         if resolved.suffix.lower() not in allowed_exts:
             print(f"[VideoGen] Seed image extension not allowed: {resolved}")
             return None
 
+        # TOCTOU 閉鎖 (codex round 5 P1):
+        # validation と open() の間にファイルを差し替えられる race を防ぐため、
+        # O_NOFOLLOW で open し (symlink 経由なら open 自体が失敗)、fstat で
+        # 開いた fd のメタデータを検証してから読み出す。これで「検証した
+        # オブジェクト」と「読み出すオブジェクト」が同一であることを保証する。
+        import stat as _stat
+
         try:
-            size = resolved.stat().st_size
+            fd = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW)
         except OSError as e:
-            print(f"[VideoGen] Seed image stat failed: {e}")
-            return None
-        if size <= 100:
-            print(f"[VideoGen] Seed image too small ({size}B): {resolved}")
+            print(f"[VideoGen] Seed image open failed (possibly symlink swapped in): {e}")
             return None
 
         try:
-            with open(resolved, "rb") as f:
+            st = os.fstat(fd)
+            if not _stat.S_ISREG(st.st_mode):
+                print(f"[VideoGen] Seed image fd not a regular file (mode={oct(st.st_mode)})")
+                return None
+            if st.st_size <= 100:
+                print(f"[VideoGen] Seed image too small ({st.st_size}B): {resolved}")
+                return None
+            with os.fdopen(fd, "rb", closefd=True) as f:
+                # fdopen takes ownership; do not call os.close(fd) afterwards
+                fd = -1
                 image_bytes = f.read()
-            print(f"[VideoGen] Using seed image: {resolved.name} ({len(image_bytes) / 1024:.0f}KB)")
-            return base64.b64encode(image_bytes).decode("ascii")
         except Exception as e:
             print(f"[VideoGen] Failed to read seed image: {e}")
             return None
+        finally:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+        print(f"[VideoGen] Using seed image: {resolved.name} ({len(image_bytes) / 1024:.0f}KB)")
+        return base64.b64encode(image_bytes).decode("ascii")
 
     async def _generate_fal(self, job: GenerationJob):
         """fal.ai Kling Video v2.1 — image-to-video generation.

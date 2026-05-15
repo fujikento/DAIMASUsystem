@@ -110,8 +110,13 @@ def _validate_seed_image_path(path: str) -> None:
     if not path:
         raise HTTPException(400, "seed_image_path is empty")
 
+    # 入力パス自体が symlink なら拒否 (codex round 5 厳密化)
+    input_path = Path(path)
+    if input_path.is_symlink():
+        raise HTTPException(400, f"seed_image_path is a symlink (not allowed): {path}")
+
     try:
-        resolved = Path(path).resolve(strict=False)
+        resolved = input_path.resolve(strict=False)
     except (OSError, RuntimeError) as e:
         raise HTTPException(400, f"seed_image_path cannot be resolved: {path} ({e})")
 
