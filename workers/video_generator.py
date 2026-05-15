@@ -670,20 +670,55 @@ class VideoGeneratorService:
         使う。「previews ディレクトリの最新 jpg」のような fallback は別 scene の
         seed を拾って AI 出力が theme/course と食い違う事故を起こすので削除した。
 
+        TOCTOU 防御 (overnight Phase 8 round 4):
+            API 層 _validate_seed_image_path での検証後、worker が開くまでの間に
+            attacker が同パスを symlink to .env などに差し替える race を防ぐため、
+            ここでも SEED_IMAGES_ROOT 配下 + 通常ファイル + 拡張子を再検証する。
+            検証ロジックは API 層と同期させること。
+
         Returns the image as a base64-encoded JPEG string, or None if not found.
         """
         if not job.seed_image_path:
             return None
 
-        p = Path(job.seed_image_path)
-        if not p.exists() or p.stat().st_size <= 100:
-            print(f"[VideoGen] Seed image not usable: {job.seed_image_path}")
+        # 再検証: API 層と同じ root / 拡張子 / サイズ閾値
+        _project_root = Path(__file__).resolve().parent.parent
+        default_seed_root = _project_root / "api" / "uploads" / "seeds"
+        seed_root = Path(os.environ.get("SEED_IMAGES_ROOT", str(default_seed_root))).resolve()
+        allowed_exts = {".jpg", ".jpeg", ".png", ".webp"}
+
+        try:
+            resolved = Path(job.seed_image_path).resolve(strict=False)
+        except (OSError, RuntimeError) as e:
+            print(f"[VideoGen] Seed image resolve failed: {e}")
             return None
 
         try:
-            with open(p, "rb") as f:
+            resolved.relative_to(seed_root)
+        except ValueError:
+            print(f"[VideoGen] Seed image outside SEED_IMAGES_ROOT ({seed_root}): {resolved}")
+            return None
+
+        if not resolved.is_file():
+            print(f"[VideoGen] Seed image not a regular file: {resolved}")
+            return None
+        if resolved.suffix.lower() not in allowed_exts:
+            print(f"[VideoGen] Seed image extension not allowed: {resolved}")
+            return None
+
+        try:
+            size = resolved.stat().st_size
+        except OSError as e:
+            print(f"[VideoGen] Seed image stat failed: {e}")
+            return None
+        if size <= 100:
+            print(f"[VideoGen] Seed image too small ({size}B): {resolved}")
+            return None
+
+        try:
+            with open(resolved, "rb") as f:
                 image_bytes = f.read()
-            print(f"[VideoGen] Using seed image: {p.name} ({len(image_bytes) / 1024:.0f}KB)")
+            print(f"[VideoGen] Using seed image: {resolved.name} ({len(image_bytes) / 1024:.0f}KB)")
             return base64.b64encode(image_bytes).decode("ascii")
         except Exception as e:
             print(f"[VideoGen] Failed to read seed image: {e}")

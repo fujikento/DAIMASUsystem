@@ -604,6 +604,15 @@ async def generate_from_courses(
     mode = GenerationMode(req.mode)
     provider = VideoProvider(req.provider)
 
+    # overnight Phase 8 round 4 — codex P2: unified mode は background で必ず failed に
+    # なるので、同期 400 で fail-fast。
+    if mode == GenerationMode.UNIFIED:
+        raise HTTPException(
+            400,
+            "unified mode は現行 provider で生成不可。mode='zone' を指定するか、"
+            "個別シーン単位で POST /api/generation/video/ultra-wide を使用してください。",
+        )
+
     # DBからその曜日のコース料理を取得
     dishes = (
         db.query(CourseDish)
