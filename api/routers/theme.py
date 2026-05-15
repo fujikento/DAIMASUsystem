@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 from api.models.database import get_db
 from api.models.schemas import (
     DayThemeModel,
-    DayThemeBase,
     DayThemeUpdate,
     DayThemeResponse,
 )

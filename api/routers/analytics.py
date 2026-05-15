@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, date
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, and_, case, text
+from sqlalchemy import func, case, text
 from sqlalchemy.orm import Session
 
 from api.models.database import get_db
@@ -18,8 +18,6 @@ from api.models.schemas import (
     EventLogCreate,
     EventLogResponse,
     GenerationMetrics,
-    GenerationMetricsCreate,
-    GenerationMetricsResponse,
     DashboardSummary,
     ProviderStats,
     ThemeStats,

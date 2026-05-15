@@ -24,7 +24,6 @@ from api.models.database import SessionLocal, get_db
 from api.models.schemas import (
     Show,
     ShowCue,
-    Storyboard,
     StoryboardScene,
     ShowCreate,
     ShowCueCreate,

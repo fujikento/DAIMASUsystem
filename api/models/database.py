@@ -59,7 +59,7 @@ def _add_column_if_missing(conn, table: str, column: str, col_type: str) -> None
         existing = {row[1] for row in result}
         if column not in existing:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
-    except Exception as e:
+    except Exception:
         # カラムが既に存在する場合などは無視
         pass
 

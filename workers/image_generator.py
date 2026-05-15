@@ -44,7 +44,7 @@ import time as _time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 # Opt-1: Top-level PIL import to avoid repeated import-lock acquisition
 # under concurrent thread-pool execution.  Python caches modules, but the

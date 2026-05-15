@@ -1,14 +1,11 @@
 """プロジェクション制御ルーター (OSC + WebSocket)"""
 
-import io
-import json
 import logging
 import time
 from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -19,7 +16,6 @@ from api.models.schemas import (
     ProjectionPlayRequest,
     ProjectionTriggerRequest,
     ProjectionStatusResponse,
-    PlaybackLogResponse,
     BirthdayReservation,
 )
 from api.services.osc_controller import osc

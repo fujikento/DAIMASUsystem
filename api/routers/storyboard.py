@@ -44,8 +44,6 @@ from workers.video_generator import (
 from workers.image_generator import (
     ImageGeneratorService,
     ImageProvider,
-    ImageGenerationJob,
-    _get_api_key,
 )
 
 router = APIRouter(prefix="/api/storyboards", tags=["storyboards"])
