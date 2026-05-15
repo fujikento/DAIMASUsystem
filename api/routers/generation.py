@@ -78,6 +78,35 @@ def _raise_if_jobs_failed(jobs) -> None:
         raise RuntimeError(f"{len(failed)} generation job(s) failed — " + "; ".join(msgs))
 
 
+def _validate_seed_image_path(path: str) -> None:
+    """ultra_wide_i2v 用 seed 画像のフェイル・ファスト検証。
+
+    codex review 2026-05-16 P2 (round 2):
+        ``os.path.exists`` だけだとディレクトリや 0 バイトファイルも通ってしまう。
+        worker 側の ``_find_seed_image`` は size <= 100 を「使えない」と判定して
+        ``None`` を返すため、API 段階で同じ閾値で fail-fast にすることで silent
+        fallback (placeholder / text-to-video) で別物の成果物が出る事故を防ぐ。
+
+    Raises:
+        HTTPException 400 — パスが存在しない / 通常ファイルでない / サイズ過小。
+    """
+    if not path:
+        raise HTTPException(400, "seed_image_path is empty")
+    if not os.path.exists(path):
+        raise HTTPException(400, f"seed_image_path not found: {path}")
+    if not os.path.isfile(path):
+        raise HTTPException(400, f"seed_image_path is not a regular file: {path}")
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        raise HTTPException(400, f"seed_image_path unreadable: {path} ({e})")
+    if size <= 100:
+        raise HTTPException(
+            400,
+            f"seed_image_path too small ({size} bytes, need > 100): {path}",
+        )
+
+
 def _layout_from_db(db: Session) -> LayoutSpec:
     """DB の ProjectionConfig を LayoutSpec に変換する。未設定ならデフォルト。"""
     config = db.query(ProjectionConfig).first()
@@ -354,11 +383,15 @@ async def generate_video(req: VideoGenerateRequest, background_tasks: Background
     mode = GenerationMode(req.mode)
     provider = VideoProvider(req.provider)
 
-    if mode == GenerationMode.ULTRA_WIDE_I2V and not req.seed_image_path:
-        raise HTTPException(
-            400,
-            "ultra_wide_i2v モードには seed_image_path (事前生成の 32:9 静止画) が必須です。",
-        )
+    if mode == GenerationMode.ULTRA_WIDE_I2V:
+        if not req.seed_image_path:
+            raise HTTPException(
+                400,
+                "ultra_wide_i2v モードには seed_image_path (事前生成の 32:9 静止画) が必須です。",
+            )
+        # codex review 2026-05-16 P2 (round 1+2): 存在しない / ディレクトリ / 0 バイト
+        # ファイルを silent fallback (placeholder / t2v) に流して別物の成果物を出すのを防ぐ。
+        _validate_seed_image_path(req.seed_image_path)
 
     job_id = _new_job_id("webgen")
 
@@ -420,8 +453,8 @@ async def generate_ultra_wide_video(
         raise HTTPException(400, f"Unknown theme: {req.theme}")
     if req.course not in COURSE_ORDER:
         raise HTTPException(400, f"Unknown course: {req.course}")
-    if not os.path.exists(req.seed_image_path):
-        raise HTTPException(400, f"seed_image_path not found: {req.seed_image_path}")
+    # codex review 2026-05-16 P2 (round 2): existence だけでは directory/0byte が通ってしまう
+    _validate_seed_image_path(req.seed_image_path)
 
     provider = VideoProvider(req.provider)
     job_id = _new_job_id("webuw")

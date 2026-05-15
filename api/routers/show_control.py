@@ -306,17 +306,29 @@ async def _auto_follow_task(show_id: int, delay: float, expected_current_cue_id:
 
 
 async def _advance_to_cue(show: Show, target_cue: ShowCue, db: Session) -> bool:
-    """show を target_cue に進める (DB commit + OSC 送信 + ランタイム記録)。
+    """show を target_cue に進める。
 
-    OSC 失敗時は DB は commit したまま (UI に degraded を見せる) で False を返す。
-    呼び出し側は False のとき auto-follow を spawn しない方が安全。
+    順序 (codex review 2026-05-16 P2):
+        1. OSC で _execute_cue を実行 (load_content / transition / trigger 等)
+        2. OSC 成功時のみ DB を commit (current_cue_id, status) + ランタイムの cue 開始時刻
+        3. OSC 失敗時は DB を rollback して degraded フラグだけ立てる
+           (実際は投影されていない cue を UI/DB が「現在 cue」と見せる事故を防ぐ)
+
+    Returns:
+        True  -- OSC 成功 + DB commit 済み。caller は auto-follow を spawn してよい
+        False -- OSC 失敗。show 状態は変更されていない。caller は auto-follow を spawn しないこと
     """
+    ok = await _execute_cue(target_cue, show.id)
+    if not ok:
+        # _execute_cue 内で degraded フラグは既に立っている
+        db.rollback()
+        return False
+
     show.current_cue_id = target_cue.id
     show.status = "running"
     db.commit()
     _runtime.start_cue(show.id)
-    ok = await _execute_cue(target_cue, show.id)
-    return ok
+    return True
 
 
 def _schedule_auto_follow(show_id: int, cue: ShowCue) -> None:

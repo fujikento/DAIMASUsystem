@@ -173,23 +173,30 @@ class OSCController:
             address: OSC アドレス
             *args: ペイロード
             wait_ack: True なら ack を待つ。None のときは self.ack_enabled に従う。
+
+        ワイヤープロトコル:
+            - ack mode 有効時のみ ``[seq, ts_ms, *args]`` を送信する。
+              TD 側パッチは args[0]/args[1] を seq/ts として読み取り、残りを実引数として使う。
+            - fire-and-forget 時は ``args`` をそのまま送信する。
+              既存 TD パッチが ``/play <timeline_id>`` のように 1 引数目を実データとして
+              扱うため、seq 等を勝手に prepend すると後方互換が壊れる
+              (codex review 2026-05-16 P1)。
         """
         seq = self._next_seq()
-        ts_ms = int(time.monotonic() * 1000)
-        # ペイロード先頭に [seq, monotonic_ms] を付与してメッセージを構成する。
-        # TD 側は args[0]/args[1] を seq/ts として読み取り、残りを実引数として使う。
-        full_args = [seq, ts_ms, *args]
         do_wait = self.ack_enabled if wait_ack is None else wait_ack
 
         if do_wait and self._ack_server is not None:
+            ts_ms = int(time.monotonic() * 1000)
+            full_args = [seq, ts_ms, *args]
             return self._send_with_ack(address, seq, full_args)
-        return self._send_once(address, seq, full_args)
+        # 後方互換: 既存の args をそのまま送る
+        return self._send_once(address, seq, list(args))
 
     def _send_once(self, address: str, seq: int, full_args: list) -> OscSendResult:
         try:
             with self._send_lock:
                 self.client.send_message(address, full_args)
-            logger.info("OSC sent: %s seq=%d args=%s", address, seq, full_args[2:])
+            logger.info("OSC sent: %s seq=%d args=%s", address, seq, full_args)
             return OscSendResult(address=address, seq=seq, sent=True, acked=False,
                                  attempts=1, latency_ms=None, ack_required=False)
         except Exception as e:
