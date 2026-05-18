@@ -8,9 +8,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
 from api.models.database import init_db
+from api.middleware.auth import APIKeyAuthMiddleware
+from api.middleware.ratelimit import limiter, rate_limit_exceeded_handler
 from api.routers import content, timeline, birthday, projection, generation, course, theme, storyboard, settings, character
-from api.routers import show_control, reservation, analytics, table_session
+from api.routers import show_control, reservation, analytics, table_session, system
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,6 +37,15 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Rate limiting (slowapi) — 公開 endpoint の DoS / 生成 API 乱用を防ぐ
+# SlowAPIMiddleware が無いと default_limits が一切発火しない (codex round 2 P2)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# API key 認証 (ADMIN_API_KEY env 設定時のみ有効、未設定なら open mode)
+app.add_middleware(APIKeyAuthMiddleware)
 
 # CORS configuration.
 # allow_origins=["*"] with allow_credentials=True is rejected by browsers
@@ -65,6 +79,7 @@ app.include_router(show_control.router)
 app.include_router(reservation.router)
 app.include_router(analytics.router)
 app.include_router(table_session.router)
+app.include_router(system.router)
 
 # プレビュー画像の静的ファイル配信
 _previews_dir = os.path.join(

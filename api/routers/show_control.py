@@ -64,9 +64,19 @@ class ShowRuntime:
                 "lock": asyncio.Lock(),
                 "degraded": False,
                 "last_osc_error": None,
+                # codex round 4 P1: emergency_stop で立て、再 start 時に解除する panic flag
+                # True の間は _advance_to_cue が OSC 送信を block する
+                "panic_stopped": False,
             }
             self._state[show_id] = entry
         return entry
+
+    def set_panic(self, show_id: int, panic: bool) -> None:
+        self._entry(show_id)["panic_stopped"] = bool(panic)
+
+    def is_panic(self, show_id: int) -> bool:
+        entry = self._state.get(show_id)
+        return bool(entry and entry.get("panic_stopped"))
 
     def lock(self, show_id: int) -> asyncio.Lock:
         return self._entry(show_id)["lock"]
@@ -313,10 +323,20 @@ async def _advance_to_cue(show: Show, target_cue: ShowCue, db: Session) -> bool:
         3. OSC 失敗時は DB を rollback して degraded フラグだけ立てる
            (実際は投影されていない cue を UI/DB が「現在 cue」と見せる事故を防ぐ)
 
+    panic guard (codex round 4 P1): /emergency-stop で set_panic されている間は
+    どんな cue 進行要求も block する。/start で reset するまで OSC を一切送らない。
+
     Returns:
         True  -- OSC 成功 + DB commit 済み。caller は auto-follow を spawn してよい
-        False -- OSC 失敗。show 状態は変更されていない。caller は auto-follow を spawn しないこと
+        False -- OSC 失敗 or panic blocked。show 状態は変更されていない。
     """
+    if _runtime.is_panic(show.id):
+        logger.warning(
+            "[Show %s] _advance_to_cue blocked — panic flag is set. Use /start to reset.",
+            show.id,
+        )
+        db.rollback()
+        return False
     ok = await _execute_cue(target_cue, show.id)
     if not ok:
         # _execute_cue 内で degraded フラグは既に立っている
@@ -392,10 +412,13 @@ def get_show(show_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{show_id}/start", response_model=ShowStatusResponse)
 async def start_show(show_id: int, db: Session = Depends(get_db)):
-    """ショー開始: 最初のキューを実行"""
+    """ショー開始: 最初のキューを実行 (emergency-stop された後の復帰経路でもある)"""
     lock = _runtime.lock(show_id)
     async with lock:
         await _runtime.cancel_auto_task(show_id)
+        # codex round 4 P1: emergency_stop 後の意図的な再開時は panic flag を解除
+        _runtime.set_panic(show_id, False)
+        _runtime.set_degraded(show_id, None)
 
         show = db.query(Show).filter(Show.id == show_id).first()
         if not show:
@@ -530,6 +553,105 @@ async def stop_show(show_id: int, db: Session = Depends(get_db)):
 
         await _broadcast_show_status(show_id, db)
         return _build_status(show_id, db)
+
+
+@router.post("/{show_id}/emergency-stop", response_model=ShowStatusResponse)
+async def emergency_stop_show(show_id: int, db: Session = Depends(get_db)):
+    """ライブ中の致命的失敗用 — 全 OSC タスクを即時 cancel し、blackout を送る。
+
+    通常の /stop と違って:
+      - DB 状態更新を待たず、まず OSC blackout を送る
+      - auto-task を sync で cancel (await しない)
+      - 失敗してもエラーを上に投げない (ステージ上の操作優先)
+      - showRuntime に panic flag を立てて以後の cue 進行を block
+    """
+    logger.warning("[Show %s] EMERGENCY STOP requested", show_id)
+
+    # Step 0: panic flag を最初に立てる (in-flight _advance_to_cue が panic check に
+    # 引っかからずに進むのを防ぐ。codex round 10 P1: それでも race window は残るので
+    # Step 2 で lock を取って serialize する)
+    _runtime.set_panic(show_id, True)
+
+    # Step 1: OSC blackout を即発射 (lock 取得前 — UX 優先で 1ms でも早く真っ暗に)
+    try:
+        bo_res = osc.send("/projection/blackout", 1)
+        logger.warning("[Show %s] blackout result: ok=%s", show_id, bo_res.ok)
+    except Exception as e:
+        logger.exception("[Show %s] blackout OSC failed: %s", show_id, e)
+
+    # Step 2: in-flight _advance_to_cue が完了するのを最大 2 秒待つ。
+    # その後 blackout を再送して最終 OSC として保証する。
+    lock = _runtime.lock(show_id)
+    try:
+        async with asyncio.timeout(2.0):
+            async with lock:
+                try:
+                    await _runtime.cancel_auto_task(show_id)
+                except Exception as e:
+                    logger.exception("[Show %s] cancel_auto_task failed: %s", show_id, e)
+                try:
+                    stop_res = osc.stop()
+                    logger.warning("[Show %s] stop result: ok=%s", show_id, stop_res.ok)
+                    # 最後にもう一度 blackout して in-flight 後の表示も真っ暗に保証
+                    osc.send("/projection/blackout", 1)
+                except Exception as e:
+                    logger.exception("[Show %s] OSC stop/blackout failed: %s", show_id, e)
+    except (asyncio.TimeoutError, Exception) as e:
+        # lock 取得 / cancel_auto_task が 2 秒以内に終わらなくても続行する
+        logger.error("[Show %s] emergency lock acquisition timeout: %s — forcing clear", show_id, e)
+
+    _runtime.clear(show_id)
+    _runtime.set_degraded(show_id, "emergency_stop")
+    _runtime.set_panic(show_id, True)  # clear() 後の entry にも再設定
+
+    # Step 3: DB 状態反映 (失敗しても継続)
+    try:
+        show = db.query(Show).filter(Show.id == show_id).first()
+        if show:
+            show.status = "emergency_stopped"
+            show.current_cue_id = None
+            db.commit()
+    except Exception as e:
+        logger.exception("[Show %s] DB rollback after emergency stop failed: %s", show_id, e)
+        db.rollback()
+
+    try:
+        await _broadcast_show_status(show_id, db)
+    except Exception:
+        pass
+
+    return _build_status(show_id, db) or ShowStatusResponse(
+        show_id=show_id, status="emergency_stopped", current_cue_id=None,
+        current_cue_number=None, current_cue_type=None, elapsed_in_cue=0.0,
+        total_cues=0, completed_cues=0, degraded=True, last_osc_error="emergency_stop",
+    )
+
+
+@router.post("/{show_id}/blackout")
+async def blackout(show_id: int) -> dict:
+    """全プロジェクター黒画面化 (緊急時 / VIP プライバシー対応用)。
+
+    DB / 状態は触らず OSC 1 発だけ送る。auto-task は止めないので復帰時は
+    /resume か /go で再開できる。
+    """
+    logger.warning("[Show %s] BLACKOUT requested", show_id)
+    try:
+        res = osc.send("/projection/blackout", 1)
+        return {"ok": res.ok, "error": res.error, "show_id": show_id}
+    except Exception as e:
+        logger.exception("[Show %s] blackout failed: %s", show_id, e)
+        return {"ok": False, "error": str(e), "show_id": show_id}
+
+
+@router.post("/{show_id}/unblackout")
+async def unblackout(show_id: int) -> dict:
+    """ブラックアウト解除 (現在 cue の表示に戻す)"""
+    logger.info("[Show %s] UNBLACKOUT requested", show_id)
+    try:
+        res = osc.send("/projection/blackout", 0)
+        return {"ok": res.ok, "error": res.error, "show_id": show_id}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "show_id": show_id}
 
 
 @router.get("/{show_id}/status", response_model=ShowStatusResponse)

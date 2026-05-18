@@ -88,6 +88,16 @@ class OSCController:
         self.ack_timeout = ack_timeout
         self.retry = max(0, retry)
 
+        # ── Phase 1.6 rehearsal mode ──
+        # dry_run=True なら client.send_message を呼ばずに ok=True を返す。
+        # ステージリハーサルで TouchDesigner を起動せずに show flow / timing を
+        # 検証する。env OSC_DRY_RUN=1 で起動時に有効化、または set_dry_run() で
+        # 動的に切替可能。
+        self._dry_run = os.environ.get("OSC_DRY_RUN", "0") == "1"
+        # dry_run 中の送信を記録 (UI で「rehearsal で何が送られたか」を確認)
+        self._dry_run_log: list[dict] = []
+        self._dry_run_log_max = 500
+
         # ack 受信用イベント: seq -> threading.Event + arrival time
         self._ack_events: dict[int, threading.Event] = {}
         self._ack_times: dict[int, float] = {}
@@ -98,6 +108,21 @@ class OSCController:
 
         if self.ack_enabled:
             self._start_ack_server()
+
+    # ── rehearsal (dry-run) mode 制御 ─────────────────────────
+    def set_dry_run(self, enabled: bool) -> None:
+        """rehearsal mode の動的切替。TD 不在でも show flow を流せる。"""
+        self._dry_run = bool(enabled)
+        if not enabled:
+            self._dry_run_log.clear()
+        logger.info("[OSC] dry_run = %s", self._dry_run)
+
+    def is_dry_run(self) -> bool:
+        return self._dry_run
+
+    def get_dry_run_log(self, limit: int = 100) -> list[dict]:
+        """rehearsal 中に「送るはずだったメッセージ」のログを返す。"""
+        return self._dry_run_log[-limit:]
 
     # ── ack サーバー (TD → API) ────────────────────────────────
 
@@ -184,6 +209,22 @@ class OSCController:
         """
         seq = self._next_seq()
         do_wait = self.ack_enabled if wait_ack is None else wait_ack
+
+        # ── rehearsal mode: 実送信しない、ログだけ残して ok=True を返す ──
+        if self._dry_run:
+            entry = {
+                "seq": seq, "address": address, "args": list(args),
+                "ts_ms": int(time.monotonic() * 1000),
+            }
+            self._dry_run_log.append(entry)
+            if len(self._dry_run_log) > self._dry_run_log_max:
+                self._dry_run_log = self._dry_run_log[-self._dry_run_log_max:]
+            logger.debug("[OSC dry_run] %s %s", address, args)
+            return OscSendResult(
+                address=address, seq=seq, sent=True, acked=True,
+                attempts=1, latency_ms=0.0,
+                ack_required=do_wait,
+            )
 
         if do_wait and self._ack_server is not None:
             ts_ms = int(time.monotonic() * 1000)

@@ -32,3 +32,6 @@ openai>=2.0.0
 
 # === Image Processing ===
 Pillow>=10.0.0
+
+# === Rate limiting (公開 endpoint の DoS / 生成 API 乱用防止) ===
+slowapi>=0.1.9

@@ -16,12 +16,19 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from api.middleware.ratelimit import generation_rate_limit
 from api.models.database import get_db
 from api.models.schemas import CourseDish, ProjectionConfig, ProjectionConfigUpdate
+from api.services.cost_tracker import (
+    estimate_usd,
+    map_video_provider,
+    record_refund,
+    reserve_or_raise,
+)
 
 # ワーカーモジュールをimportできるようにパス追加
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -416,7 +423,13 @@ def preview_prompt(req: VideoGenerateRequest):
 
 
 @router.post("/video", response_model=JobStatusResponse)
-async def generate_video(req: VideoGenerateRequest, background_tasks: BackgroundTasks):
+@generation_rate_limit()
+async def generate_video(
+    req: VideoGenerateRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,  # noqa: ARG001  # required by slowapi to inject for rate-limit key
+    db: Session = Depends(get_db),
+):
     """映像生成をバックグラウンドで開始"""
     if req.theme not in THEME_PROMPTS:
         raise HTTPException(400, f"Unknown theme: {req.theme}")
@@ -448,6 +461,20 @@ async def generate_video(req: VideoGenerateRequest, background_tasks: Background
         # ファイルを silent fallback (placeholder / t2v) に流して別物の成果物を出すのを防ぐ。
         _validate_seed_image_path(req.seed_image_path)
 
+    # ── デイリーコスト reserve (Phase 1.4 + round 3 race fix) ──
+    # 同時 request の race を防ぐため、check + record を atomic にここで実行。
+    # job 失敗時は _run() 末尾で record_refund を呼んで巻き戻す。
+    provider_key = map_video_provider(req.provider)
+    est_per_video = estimate_usd(provider_key, "video", duration_seconds=10)
+    est_total = est_per_video * (4 if mode == GenerationMode.ZONE and not req.zone_id else 1)
+    try:
+        reserve_or_raise(
+            db, provider_key, "video", est_total,
+            metadata={"theme": req.theme, "course": req.course, "mode": req.mode},
+        )
+    except RuntimeError as e:
+        raise HTTPException(429, str(e))
+
     job_id = _new_job_id("webgen")
 
     async def _run():
@@ -469,6 +496,13 @@ async def generate_video(req: VideoGenerateRequest, background_tasks: Background
             await _update_job(job_id, status="complete")
         except Exception as e:
             logger.exception("[generate_video] job %s failed", job_id)
+            # 失敗 → reserved cost を refund
+            from api.models.database import SessionLocal
+            _db = SessionLocal()
+            try:
+                record_refund(_db, provider_key, "video", est_total, metadata={"job_id": job_id, "reason": str(e)[:200]})
+            finally:
+                _db.close()
             await _update_job(job_id, status="failed", error=str(e))
 
     await _register_job(job_id, {
@@ -512,6 +546,18 @@ async def generate_ultra_wide_video(
     _validate_seed_image_path(req.seed_image_path)
 
     provider = VideoProvider(req.provider)
+
+    # コスト reserve (round 3 race fix)
+    provider_key = map_video_provider(req.provider)
+    est_cost = estimate_usd(provider_key, "video", duration_seconds=req.duration_seconds)
+    try:
+        reserve_or_raise(
+            db, provider_key, "video", est_cost,
+            metadata={"theme": req.theme, "course": req.course, "mode": "ultra_wide_i2v"},
+        )
+    except RuntimeError as e:
+        raise HTTPException(429, str(e))
+
     job_id = _new_job_id("webuw")
 
     async def _run():
@@ -533,6 +579,12 @@ async def generate_ultra_wide_video(
             await _update_job(job_id, status="complete", output_path=final_path)
         except Exception as e:
             logger.exception("[generate_ultra_wide_video] job %s failed", job_id)
+            from api.models.database import SessionLocal
+            _db = SessionLocal()
+            try:
+                record_refund(_db, provider_key, "video", est_cost, metadata={"job_id": job_id, "reason": str(e)[:200]})
+            finally:
+                _db.close()
             await _update_job(job_id, status="failed", error=str(e))
 
     await _register_job(job_id, {
@@ -554,7 +606,11 @@ async def generate_ultra_wide_video(
 
 
 @router.post("/video/batch", response_model=JobStatusResponse)
-async def generate_batch(req: BatchGenerateRequest, background_tasks: BackgroundTasks):
+async def generate_batch(
+    req: BatchGenerateRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     """テーマ全コース一括生成"""
     if req.day not in DAY_TO_THEME:
         raise HTTPException(400, f"Unknown day: {req.day}")
@@ -571,6 +627,19 @@ async def generate_batch(req: BatchGenerateRequest, background_tasks: Background
             "個別シーン単位で POST /api/generation/video/ultra-wide を使用してください。",
         )
 
+    # コスト reserve (round 3 race fix)
+    provider_key = map_video_provider(req.provider)
+    per_clip = estimate_usd(provider_key, "video", duration_seconds=10)
+    n_clips = 5 * (4 if mode == GenerationMode.ZONE else 1)
+    est_cost = per_clip * n_clips
+    try:
+        reserve_or_raise(
+            db, provider_key, "video", est_cost,
+            metadata={"day": req.day, "theme": theme, "mode": req.mode, "n_clips": n_clips},
+        )
+    except RuntimeError as e:
+        raise HTTPException(429, str(e))
+
     job_id = _new_job_id("webbatch")
 
     async def _run():
@@ -579,6 +648,12 @@ async def generate_batch(req: BatchGenerateRequest, background_tasks: Background
             await _update_job(job_id, status="complete")
         except Exception as e:
             logger.exception("[generate_batch] job %s failed", job_id)
+            from api.models.database import SessionLocal
+            _db = SessionLocal()
+            try:
+                record_refund(_db, provider_key, "video", est_cost, metadata={"job_id": job_id, "reason": str(e)[:200]})
+            finally:
+                _db.close()
             await _update_job(job_id, status="failed", error=str(e))
 
     await _register_job(job_id, {"status": "processing", "day": req.day, "mode": req.mode})
@@ -631,6 +706,19 @@ async def generate_from_courses(
             404, f"{req.day} のコース料理が登録されていません。先にコースを登録してください。"
         )
 
+    # コスト reserve (round 3 race fix)
+    provider_key = map_video_provider(req.provider)
+    per_clip = estimate_usd(provider_key, "video", duration_seconds=10)
+    n_clips = len(dishes) * (4 if mode == GenerationMode.ZONE else 1)
+    est_cost = per_clip * n_clips
+    try:
+        reserve_or_raise(
+            db, provider_key, "video", est_cost,
+            metadata={"day": req.day, "n_dishes": len(dishes), "mode": req.mode},
+        )
+    except RuntimeError as e:
+        raise HTTPException(429, str(e))
+
     # コース情報を保存 (バックグラウンドタスク用)
     dish_info = [
         {
@@ -672,6 +760,12 @@ async def generate_from_courses(
             await _update_job(job_id, status="complete")
         except Exception as e:
             logger.exception("[generate_from_courses] job %s failed", job_id)
+            from api.models.database import SessionLocal
+            _db = SessionLocal()
+            try:
+                record_refund(_db, provider_key, "video", est_cost, metadata={"job_id": job_id, "reason": str(e)[:200]})
+            finally:
+                _db.close()
             await _update_job(job_id, status="failed", error=str(e))
 
     await _register_job(job_id, {

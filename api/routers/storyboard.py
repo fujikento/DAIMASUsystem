@@ -1038,12 +1038,6 @@ async def generate_images(
         for s in pending_scenes
     ]
 
-    # ステータスを更新
-    for scene in pending_scenes:
-        scene.image_status = "generating"
-    sb.status = "images_generating"
-    db.commit()
-
     # provider 解決:
     #   - 明示指定 (body.provider != None): そのまま使う (無効値なら ValueError → imagen にフォールバック)
     #   - 省略 (body.provider is None): OPENAI_API_KEY の有無で smart default
@@ -1074,6 +1068,28 @@ async def generate_images(
         # 無効な provider 名なら既存 default の imagen に落とす (gpt_image_2 ではなく)
         provider = ImageProvider.IMAGEN
         image_provider_str = "imagen"
+
+    # コスト reserve (Phase 1.4 — codex round 5 P1: image batch にも適用)
+    # provider 名を cost_tracker の price key に map
+    from api.services.cost_tracker import estimate_usd, reserve_or_raise as _reserve
+    _cost_provider_key = image_provider_str  # gpt_image_2 / gemini / imagen 等は price 辞書と同名
+    if image_provider_str == "fal":
+        _cost_provider_key = "fal_image"
+    est_image_cost = estimate_usd(_cost_provider_key, "image") * len(pending_scenes)
+    try:
+        _reserve(
+            db, _cost_provider_key, "image", est_image_cost,
+            metadata={"storyboard_id": storyboard_id, "n_scenes": len(pending_scenes), "endpoint": "generate-images"},
+        )
+    except RuntimeError as e:
+        raise HTTPException(429, str(e))
+
+    # ステータスを更新 — reserve OK 後にここで commit (codex round 8 P2:
+    # generating に変えた後に 429 で抜けて scene が stuck になるのを防ぐ)
+    for scene in pending_scenes:
+        scene.image_status = "generating"
+    sb.status = "images_generating"
+    db.commit()
 
     # gpt-image-2 + chain_style 有効時のみ scene-to-scene style chain を serial 実行する。
     # 前シーンの出力が次の reference 入力になるので並列化できないが、style 一貫性を最大化。
@@ -1328,6 +1344,19 @@ async def generate_images(
             _active_jobs[job_id]["status"] = "failed"
             _active_jobs[job_id]["error"] = str(e)
             print(f"[ImageGen] Batch _run() failed after {_batch_wall_elapsed:.1f}s: {e}")
+            # Phase 1.4 codex round 6 P2: image batch 失敗時の refund
+            try:
+                from api.services.cost_tracker import record_refund as _rr
+                _db_refund = SessionLocal()
+                try:
+                    _rr(
+                        _db_refund, _cost_provider_key, "image", est_image_cost,
+                        metadata={"storyboard_id": storyboard_id, "job_id": job_id, "reason": str(e)[:200]},
+                    )
+                finally:
+                    _db_refund.close()
+            except Exception as _refund_err:
+                print(f"[ImageGen] refund failed: {_refund_err}")
             # Reset any scenes still stuck at "generating" to "failed"
             # so the UI does not hang indefinitely on those scenes
             try:
@@ -1419,6 +1448,22 @@ async def generate_single_image(
 
     # Fetch storyboard-level style_seed
     sb = db.query(Storyboard).filter(Storyboard.id == storyboard_id).first()
+
+    # コスト reserve (codex round 9 P2: single-scene image も cap 対象)
+    from api.services.cost_tracker import (
+        estimate_usd as _est_usd,
+        map_image_provider,
+        reserve_or_raise as _reserve_single,
+    )
+    _img_provider_key = map_image_provider(image_provider_str)
+    _img_cost = _est_usd(_img_provider_key, "image")
+    try:
+        _reserve_single(
+            db, _img_provider_key, "image", _img_cost,
+            metadata={"storyboard_id": storyboard_id, "scene_id": scene_id, "endpoint": "generate-single-image"},
+        )
+    except RuntimeError as e:
+        raise HTTPException(429, str(e))
 
     scene.image_status = "generating"
     db.commit()
@@ -1543,6 +1588,19 @@ async def generate_single_image(
             _active_jobs[job_id]["status"] = "failed"
             _active_jobs[job_id]["error"] = str(e)
             print(f"[ImageGen] Single-scene _run() failed for scene {scene_id}: {e}")
+            # codex round 10 P2: 失敗時に reserved cost を refund
+            try:
+                from api.services.cost_tracker import record_refund as _rr
+                _db_r = SessionLocal()
+                try:
+                    _rr(
+                        _db_r, _img_provider_key, "image", _img_cost,
+                        metadata={"storyboard_id": storyboard_id, "scene_id": scene_id, "reason": str(e)[:200]},
+                    )
+                finally:
+                    _db_r.close()
+            except Exception as _refund_err:
+                print(f"[ImageGen] single-scene refund failed: {_refund_err}")
             # Reset scene stuck at "generating" to "failed"
             # so the UI does not hang indefinitely
             try:
@@ -1612,6 +1670,27 @@ async def generate_videos(
     pending_scenes = [s for s in sb.scenes if s.video_status == "pending"]
     if not pending_scenes:
         raise HTTPException(400, "生成対象のペンディングシーンがありません")
+
+    # 動画コスト reserve (Phase 1.4 — codex round 5 P1: storyboard 経路にも適用)
+    from api.services.cost_tracker import (
+        estimate_usd,
+        map_video_provider,
+        record_refund,
+        reserve_or_raise,
+    )
+    provider_str = sb.provider or "runway"
+    provider_key = map_video_provider(provider_str)
+    est_cost = sum(
+        estimate_usd(provider_key, "video", duration_seconds=int(s.duration_seconds or 10))
+        for s in pending_scenes
+    )
+    try:
+        reserve_or_raise(
+            db, provider_key, "video", est_cost,
+            metadata={"storyboard_id": storyboard_id, "n_scenes": len(pending_scenes), "endpoint": "generate-videos"},
+        )
+    except RuntimeError as e:
+        raise HTTPException(429, str(e))
 
     scene_data = [
         {
@@ -1709,6 +1788,20 @@ async def generate_videos(
             _active_jobs[job_id]["status"] = "failed"
             _active_jobs[job_id]["error"] = str(e)
             print(f"[VideoGen] Batch _run() failed: {e}")
+            # Phase 1.4 codex round 6 P2: 全 batch 失敗時は reserved cost を refund。
+            # 注: 部分成功 (一部 scene 成功 / 一部 failed) のケースは over-refund に
+            # なる limitation あり (per-clip 計上は Phase 3 の TODO)。
+            try:
+                _db_refund = SessionLocal()
+                try:
+                    record_refund(
+                        _db_refund, provider_key, "video", est_cost,
+                        metadata={"storyboard_id": storyboard_id, "job_id": job_id, "reason": str(e)[:200]},
+                    )
+                finally:
+                    _db_refund.close()
+            except Exception as _refund_err:
+                print(f"[VideoGen] refund failed: {_refund_err}")
             # Reset any scenes still stuck at "generating" to "failed"
             # so the UI does not hang indefinitely on those scenes
             try:
@@ -1771,6 +1864,23 @@ async def generate_single_video(
         provider = VideoProvider(sb.provider)
     except (ValueError, AttributeError):
         provider = VideoProvider.RUNWAY
+
+    # コスト reserve (codex round 9 P2: single-scene endpoint も cap 対象)
+    from api.services.cost_tracker import (
+        estimate_usd,
+        map_video_provider,
+        record_refund,
+        reserve_or_raise,
+    )
+    provider_key = map_video_provider(sb.provider if sb else "runway")
+    est_cost = estimate_usd(provider_key, "video", duration_seconds=int(scene.duration_seconds or 10))
+    try:
+        reserve_or_raise(
+            db, provider_key, "video", est_cost,
+            metadata={"storyboard_id": storyboard_id, "scene_id": scene_id, "endpoint": "generate-single-video"},
+        )
+    except RuntimeError as e:
+        raise HTTPException(429, str(e))
 
     scene.video_status = "generating"
     db.commit()
@@ -1837,6 +1947,18 @@ async def generate_single_video(
         except Exception as e:
             _active_jobs[job_id]["status"] = "failed"
             _active_jobs[job_id]["error"] = str(e)
+            # codex round 10 P2: 失敗時に reserved video cost を refund
+            try:
+                _db_r = SessionLocal()
+                try:
+                    record_refund(
+                        _db_r, provider_key, "video", est_cost,
+                        metadata={"storyboard_id": storyboard_id, "scene_id": scene_id, "reason": str(e)[:200]},
+                    )
+                finally:
+                    _db_r.close()
+            except Exception as _refund_err:
+                print(f"[VideoGen] single-scene refund failed: {_refund_err}")
         finally:
             _db.close()
 

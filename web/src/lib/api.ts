@@ -79,16 +79,54 @@ function _timeoutMs(path: string): number {
   return isGeneration ? 120_000 : 15_000;
 }
 
+/**
+ * 管理画面用 API key を localStorage から取得 (codex round 8 P1)。
+ * Settings 画面で保存させる想定。env NEXT_PUBLIC_ADMIN_API_KEY からの fallback もあり。
+ */
+function _getAdminApiKey(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return (
+      window.localStorage.getItem("DAIMASU_ADMIN_API_KEY") ||
+      process.env.NEXT_PUBLIC_ADMIN_API_KEY ||
+      ""
+    );
+  } catch {
+    return process.env.NEXT_PUBLIC_ADMIN_API_KEY || "";
+  }
+}
+
+/**
+ * 認証付き raw fetch (FormData 等で apiFetch を使えない upload 経路向け)。
+ * codex round 9 P1: createContent / createBirthday / character upload 系も
+ * ADMIN_API_KEY 有効環境で 401 にならないように統一。
+ */
+export async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
+  const apiKey = _getAdminApiKey();
+  const headers: Record<string, string> = {};
+  // FormData 等は Content-Type を自動付与させたいので、ここでは付けない
+  if (init?.headers) Object.assign(headers, init.headers as Record<string, string>);
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  return fetch(`${API_BASE}${path}`, { ...init, headers });
+}
+
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), _timeoutMs(path));
+
+  // backend が ADMIN_API_KEY を要求するなら X-API-Key を自動付与
+  const apiKey = _getAdminApiKey();
+  const baseHeaders: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (apiKey) baseHeaders["X-API-Key"] = apiKey;
 
   try {
     const res = await fetch(`${API_BASE}${path}`, {
       ...options,
       signal: controller.signal,
       headers: {
-        "Content-Type": "application/json",
+        ...baseHeaders,
         ...options?.headers,
       },
     });
@@ -115,7 +153,7 @@ export async function fetchContentsByTheme(
 }
 
 export async function createContent(formData: FormData): Promise<Content> {
-  const res = await fetch(`${API_BASE}/api/contents`, {
+  const res = await authedFetch(`/api/contents`, {
     method: "POST",
     body: formData,
   });
@@ -169,7 +207,7 @@ export async function fetchBirthdays(): Promise<Birthday[]> {
 }
 
 export async function createBirthday(formData: FormData): Promise<Birthday> {
-  const res = await fetch(`${API_BASE}/api/birthdays`, {
+  const res = await authedFetch(`/api/birthdays`, {
     method: "POST",
     body: formData,
   });
@@ -1318,7 +1356,7 @@ export async function fetchCharacterTemplatePreview(
 export async function createCharacterAvatar(
   formData: FormData
 ): Promise<CharacterJobStatus> {
-  const res = await fetch(`${API_BASE}/api/characters/avatar`, {
+  const res = await authedFetch(`/api/characters/avatar`, {
     method: "POST",
     body: formData,
   });
@@ -1329,7 +1367,7 @@ export async function createCharacterAvatar(
 export async function createCharacterAnimation(
   formData: FormData
 ): Promise<CharacterJobStatus> {
-  const res = await fetch(`${API_BASE}/api/characters/animation`, {
+  const res = await authedFetch(`/api/characters/animation`, {
     method: "POST",
     body: formData,
   });
@@ -1340,7 +1378,7 @@ export async function createCharacterAnimation(
 export async function createCharacterMemorial(
   formData: FormData
 ): Promise<CharacterJobStatus> {
-  const res = await fetch(`${API_BASE}/api/characters/memorial`, {
+  const res = await authedFetch(`/api/characters/memorial`, {
     method: "POST",
     body: formData,
   });
