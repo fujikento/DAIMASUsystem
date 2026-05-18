@@ -10,6 +10,7 @@ import {
   X,
   Save,
   Check,
+  Eye,
 } from "lucide-react";
 import {
   fetchTables,
@@ -17,7 +18,9 @@ import {
   updateTable,
   deleteTable,
   type ProjectionTable,
+  type SeatSpec,
 } from "@/lib/api";
+import TableMockup from "@/components/TableMockup";
 
 interface FormState {
   name: string;
@@ -30,6 +33,15 @@ interface FormState {
   table_height_mm: number;
   note: string;
   is_default: boolean;
+  seats: SeatSpec[];
+}
+
+function defaultSeats(zoneCount: number): SeatSpec[] {
+  return Array.from({ length: Math.max(zoneCount, 1) }, (_, i) => ({
+    zone_index: i,
+    name: `${String.fromCharCode(65 + i)}席`,
+    party_size: 2,
+  }));
 }
 
 const EMPTY: FormState = {
@@ -43,6 +55,7 @@ const EMPTY: FormState = {
   table_height_mm: 600,
   note: "",
   is_default: false,
+  seats: defaultSeats(4),
 };
 
 function computed(f: FormState) {
@@ -95,6 +108,7 @@ export default function TablesPage() {
       table_height_mm: t.table_height_mm,
       note: t.note ?? "",
       is_default: t.is_default,
+      seats: t.seats?.length ? t.seats : defaultSeats(t.zone_count),
     });
   }
 
@@ -275,11 +289,66 @@ export default function TablesPage() {
                 />
               </div>
               <NumberField
-                label="ゾーン分割数"
+                label="ゾーン分割数 (席数)"
                 unit="個"
                 value={form.zone_count}
-                onChange={(v) => setForm({ ...form, zone_count: v })}
+                onChange={(v) => {
+                  const newCount = Math.max(1, v);
+                  // seats を新しい zone_count に合わせて伸縮 (既存名を保持)
+                  let newSeats = form.seats.slice(0, newCount);
+                  if (newSeats.length < newCount) {
+                    const fill = defaultSeats(newCount).slice(newSeats.length);
+                    newSeats = [...newSeats, ...fill];
+                  }
+                  setForm({ ...form, zone_count: newCount, seats: newSeats });
+                }}
               />
+            </fieldset>
+
+            {/* Seats editor */}
+            <fieldset className="space-y-2">
+              <legend className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">
+                席名・定員 ({form.zone_count}席)
+              </legend>
+              <div className="space-y-1.5">
+                {form.seats.map((seat, i) => (
+                  <div
+                    key={i}
+                    className="grid grid-cols-12 gap-2 items-center"
+                  >
+                    <span className="col-span-1 text-[11px] text-neutral-500 font-mono text-center">
+                      #{i + 1}
+                    </span>
+                    <input
+                      type="text"
+                      value={seat.name}
+                      onChange={(e) => {
+                        const newSeats = [...form.seats];
+                        newSeats[i] = { ...seat, name: e.target.value };
+                        setForm({ ...form, seats: newSeats });
+                      }}
+                      placeholder={`席${i + 1}`}
+                      className="col-span-8 bg-[#0a0d12] border border-white/10 rounded px-2 py-1 text-sm text-white placeholder-neutral-600 focus:border-blue-400/50 focus:outline-none"
+                    />
+                    <div className="col-span-3 relative">
+                      <input
+                        type="number"
+                        min={1}
+                        value={seat.party_size}
+                        onChange={(e) => {
+                          const newSeats = [...form.seats];
+                          newSeats[i] = { ...seat, party_size: Math.max(1, Number(e.target.value) || 1) };
+                          setForm({ ...form, seats: newSeats });
+                        }}
+                        className="w-full bg-[#0a0d12] border border-white/10 rounded px-2 py-1 text-sm text-white tabular-nums focus:border-blue-400/50 focus:outline-none pr-7"
+                      />
+                      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-neutral-600 pointer-events-none">
+                        名
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </fieldset>
 
             {/* Computed read-only */}
@@ -289,6 +358,41 @@ export default function TablesPage() {
               <Computed label="ゾーン幅" value={`${c.zw}px`} />
               <Computed label="アスペクト" value={(c.fw / c.fh).toFixed(2)} />
             </div>
+
+            {/* Live mockup preview */}
+            <details className="rounded border border-white/[0.06] bg-[#0a0d12]">
+              <summary className="px-3 py-1.5 text-[11px] font-medium text-neutral-400 cursor-pointer hover:text-white flex items-center gap-1.5">
+                <Eye size={11} />
+                テーブル模型プレビュー
+              </summary>
+              <div className="p-3">
+                <TableMockup
+                  table={{
+                    id: editingId ?? 0,
+                    name: form.name || "(無名)",
+                    is_default: form.is_default,
+                    pj_width: form.pj_width,
+                    pj_height: form.pj_height,
+                    pj_count: form.pj_count,
+                    blend_overlap: form.blend_overlap,
+                    zone_count: form.zone_count,
+                    table_width_mm: form.table_width_mm,
+                    table_height_mm: form.table_height_mm,
+                    note: form.note,
+                    seats: form.seats,
+                    full_width: c.fw,
+                    full_height: c.fh,
+                    zone_width: c.zw,
+                    zone_height: c.zh,
+                    created_at: null,
+                    updated_at: null,
+                  }}
+                  mode="per_zone"
+                  maxHeight={180}
+                  showProjectorOverlay
+                />
+              </div>
+            </details>
 
             {/* Note */}
             <div>

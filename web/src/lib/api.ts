@@ -381,6 +381,12 @@ export interface TableSpec {
 
 // ─── Multi-row Table (席) management ──────────────────────────────────────
 
+export interface SeatSpec {
+  zone_index: number;
+  name: string;
+  party_size: number;
+}
+
 export interface ProjectionTable {
   id: number;
   name: string;
@@ -393,6 +399,7 @@ export interface ProjectionTable {
   table_width_mm: number;
   table_height_mm: number;
   note: string | null;
+  seats: SeatSpec[];
   full_width: number;
   full_height: number;
   zone_width: number;
@@ -416,6 +423,7 @@ export async function createTable(data: {
   table_height_mm?: number;
   note?: string;
   is_default?: boolean;
+  seats?: SeatSpec[];
 }): Promise<ProjectionTable> {
   return apiFetch("/api/generation/table-specs", {
     method: "POST",
@@ -436,6 +444,7 @@ export async function updateTable(
     table_height_mm: number;
     note: string | null;
     is_default: boolean;
+    seats: SeatSpec[];
   }>
 ): Promise<ProjectionTable> {
   return apiFetch(`/api/generation/table-specs/${id}`, {

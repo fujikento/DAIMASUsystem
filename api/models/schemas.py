@@ -110,8 +110,10 @@ class PlaybackLog(Base):
 
 class ProjectionConfig(Base):
     """
-    席 (テーブル) 単位のプロジェクション設定。
-    旧来は singleton (1 行) だったが multi-row 対応で複数席を保持可能。
+    投影エリア (= カウンター / 大テーブル 等) の設定。
+    複数 PJ をブレンドした 1 つの物理投影面 + ゾーン分割 (= 個別席) を表す。
+    seats JSON でゾーン毎に席名・定員を保持し、unified / per_zone / synchronized
+    の 3 モードで動画を出し分ける。
     """
     __tablename__ = "projection_config"
 
@@ -126,6 +128,9 @@ class ProjectionConfig(Base):
     table_width_mm = Column(Integer, nullable=False, default=8120)
     table_height_mm = Column(Integer, nullable=False, default=600)
     note = Column(Text, nullable=True)  # 自由メモ (位置 / 客層 等)
+    # seats: JSON 文字列 [{zone_index:int, name:str, party_size:int}, ...]
+    # 未設定 (NULL) の場合は zone_count から自動生成 (A席, B席, ...)
+    seats_json = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -300,6 +305,12 @@ class ProjectionStatusResponse(BaseModel):
 
 
 # ProjectionConfig — 席 (テーブル) 単位
+class SeatSpec(BaseModel):
+    zone_index: int
+    name: str
+    party_size: int = 2
+
+
 class ProjectionConfigResponse(BaseModel):
     id: int
     name: str
@@ -312,6 +323,7 @@ class ProjectionConfigResponse(BaseModel):
     table_width_mm: int
     table_height_mm: int
     note: Optional[str] = None
+    seats: list[SeatSpec] = []
     # computed fields
     full_width: int
     full_height: int
@@ -334,6 +346,7 @@ class ProjectionConfigCreate(BaseModel):
     table_height_mm: int = 600
     note: Optional[str] = None
     is_default: bool = False
+    seats: Optional[list[SeatSpec]] = None
 
 
 class ProjectionConfigUpdate(BaseModel):
@@ -347,6 +360,7 @@ class ProjectionConfigUpdate(BaseModel):
     table_height_mm: Optional[int] = None
     note: Optional[str] = None
     is_default: Optional[bool] = None
+    seats: Optional[list[SeatSpec]] = None
 
 
 # ─── Storyboard ORM Models ────────────────────────────────────────────────────

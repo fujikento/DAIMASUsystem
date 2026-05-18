@@ -331,6 +331,33 @@ def list_themes(db: Session = Depends(get_db)):
     }
 
 
+def _default_seats(zone_count: int) -> list[dict]:
+    """zone_count に応じてデフォルト席名 (A席, B席, ...) を生成する。"""
+    return [
+        {"zone_index": i, "name": f"{chr(ord('A') + i)}席", "party_size": 2}
+        for i in range(max(zone_count, 1))
+    ]
+
+
+def _parse_seats(config: "ProjectionConfig") -> list[dict]:
+    """seats_json (NULL なら zone_count から自動) を list[dict] で返す。"""
+    import json
+    raw = getattr(config, "seats_json", None)
+    if raw:
+        try:
+            seats = json.loads(raw)
+            if isinstance(seats, list):
+                # zone_count に揃える: 不足分は補完、超過分は切り詰め
+                if len(seats) < config.zone_count:
+                    seats = seats + _default_seats(config.zone_count)[len(seats):]
+                elif len(seats) > config.zone_count:
+                    seats = seats[: config.zone_count]
+                return seats
+        except (ValueError, TypeError):
+            pass
+    return _default_seats(config.zone_count)
+
+
 def _config_to_dict(config: ProjectionConfig) -> dict:
     """ProjectionConfig (席) を computed フィールド込みで dict 化する。"""
     full_width = (config.pj_width * config.pj_count) - (
@@ -351,6 +378,7 @@ def _config_to_dict(config: ProjectionConfig) -> dict:
         "table_width_mm": config.table_width_mm if config.table_width_mm is not None else 8120,
         "table_height_mm": config.table_height_mm if config.table_height_mm is not None else 600,
         "note": config.note,
+        "seats": _parse_seats(config),
         "full_width": full_width,
         "full_height": full_height,
         "zone_width": zone_width,
@@ -358,6 +386,24 @@ def _config_to_dict(config: ProjectionConfig) -> dict:
         "created_at": config.created_at,
         "updated_at": config.updated_at,
     }
+
+
+def _apply_update(config: ProjectionConfig, update_data: dict) -> None:
+    """update_data を config に反映する。seats は JSON にシリアライズして保存。"""
+    import json
+    for key, value in update_data.items():
+        if key == "seats":
+            if value is None:
+                config.seats_json = None
+            else:
+                # SeatSpec list[dict] / list[BaseModel] 両対応
+                normalized = [
+                    s.model_dump() if hasattr(s, "model_dump") else dict(s)
+                    for s in value
+                ]
+                config.seats_json = json.dumps(normalized, ensure_ascii=False)
+        else:
+            setattr(config, key, value)
 
 
 def _ensure_default_config(db: Session) -> ProjectionConfig:
@@ -390,9 +436,7 @@ def get_table_spec(db: Session = Depends(get_db)):
 def update_table_spec(req: ProjectionConfigUpdate, db: Session = Depends(get_db)):
     """[後方互換] デフォルト席を更新する。新規 UI は /table-specs/{id} を使う。"""
     config = _ensure_default_config(db)
-    update_data = req.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(config, key, value)
+    _apply_update(config, req.model_dump(exclude_unset=True))
     db.commit()
     db.refresh(config)
     return _config_to_dict(config)
@@ -423,7 +467,11 @@ def create_table_spec(req: ProjectionConfigCreate, db: Session = Depends(get_db)
             {"is_default": False}
         )
 
-    config = ProjectionConfig(**req.model_dump())
+    # 基本フィールドで作成 → seats は _apply_update で JSON 化
+    base_data = req.model_dump(exclude={"seats"})
+    config = ProjectionConfig(**base_data)
+    if req.seats is not None:
+        _apply_update(config, {"seats": req.seats})
     db.add(config)
     db.commit()
     db.refresh(config)
@@ -448,8 +496,7 @@ def update_table_spec_by_id(
             ProjectionConfig.id != table_id,
         ).update({"is_default": False})
 
-    for key, value in update_data.items():
-        setattr(config, key, value)
+    _apply_update(config, update_data)
     db.commit()
     db.refresh(config)
     return _config_to_dict(config)

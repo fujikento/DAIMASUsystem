@@ -107,11 +107,12 @@ def init_db():
         # storyboards: 席 (テーブル) との紐付け
         _add_column_if_missing(conn, "storyboards", "projection_config_id", "INTEGER")
 
-        # projection_config: multi-row 拡張 — name / is_default / note / created_at
+        # projection_config: multi-row 拡張 — name / is_default / note / created_at / seats_json
         _add_column_if_missing(conn, "projection_config", "name", "VARCHAR DEFAULT 'メインテーブル'")
         _add_column_if_missing(conn, "projection_config", "is_default", "BOOLEAN DEFAULT 0")
         _add_column_if_missing(conn, "projection_config", "note", "TEXT")
         _add_column_if_missing(conn, "projection_config", "created_at", "DATETIME")
+        _add_column_if_missing(conn, "projection_config", "seats_json", "TEXT")
         # 既存の単一行に名前 + デフォルトフラグを補填 (NULL の場合のみ)
         try:
             conn.execute(text(

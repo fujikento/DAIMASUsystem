@@ -9,14 +9,18 @@ import {
   CheckCircle2,
   AlertTriangle,
   Play,
+  Eye,
 } from "lucide-react";
 import Link from "next/link";
 import {
   generateStoryboardVideos,
   fetchScenesStatus,
   regenerateSceneVideo,
+  fetchTables,
   type StoryboardData,
+  type ProjectionTable,
 } from "@/lib/api";
+import TableMockup, { type MockupMode } from "@/components/TableMockup";
 
 const COURSE_JP: Record<string, string> = {
   welcome: "ウェルカム",
@@ -48,6 +52,19 @@ export default function Step4Video({ storyboard, onReload, onBack }: Props) {
   const [polling, setPolling] = useState(false);
   const [regeneratingId, setRegeneratingId] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [table, setTable] = useState<ProjectionTable | null>(null);
+  const [mockupSceneIdx, setMockupSceneIdx] = useState(0);
+  const [mockupMode, setMockupMode] = useState<MockupMode>("unified");
+
+  // ─ Load the table this storyboard is for ─
+  useEffect(() => {
+    if (!storyboard.projection_config_id) return;
+    fetchTables()
+      .then((tbls) =>
+        setTable(tbls.find((t) => t.id === storyboard.projection_config_id) ?? null)
+      )
+      .catch(() => {});
+  }, [storyboard.projection_config_id]);
 
   const allDone = storyboard.scenes.every((s) => s.video_status === "complete");
   const someDone = storyboard.scenes.some((s) => s.video_status === "complete");
@@ -168,9 +185,9 @@ export default function Step4Video({ storyboard, onReload, onBack }: Props) {
         <>
           {/* ─ Progress bar ─ */}
           {inProgress && (
-            <div className="rounded-xl bg-[#0e1d32] border border-purple-400/15 p-4 space-y-2">
+            <div className="rounded-md bg-[#11141a] border border-white/10 p-3 space-y-2">
               <div className="flex items-center justify-between text-xs">
-                <span className="flex items-center gap-1.5 text-purple-300 font-medium">
+                <span className="flex items-center gap-1.5 text-blue-300 font-medium">
                   <Loader2 size={12} className="animate-spin" />
                   生成中(動画は時間がかかります)
                 </span>
@@ -178,15 +195,103 @@ export default function Step4Video({ storyboard, onReload, onBack }: Props) {
                   {completedCount} / {storyboard.scenes.length}
                 </span>
               </div>
-              <div className="h-1.5 bg-[#0a1628] rounded-full overflow-hidden">
+              <div className="h-1 bg-[#0a0d12] rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-gradient-to-r from-purple-500 to-pink-500 transition-all duration-500"
+                  className="h-full bg-blue-500 transition-all duration-500"
                   style={{
                     width: `${(completedCount / storyboard.scenes.length) * 100}%`,
                   }}
                 />
               </div>
             </div>
+          )}
+
+          {/* ─ Mockup preview (only when video done + table loaded) ─ */}
+          {table && someDone && (
+            <section className="rounded-md bg-[#11141a] border border-white/10 overflow-hidden">
+              <div className="px-3 py-2 border-b border-white/10 bg-white/[0.02] flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Eye size={12} className="text-neutral-500" />
+                  <h3 className="text-xs font-semibold text-neutral-300 uppercase tracking-wider">
+                    テーブル投影プレビュー
+                  </h3>
+                  <span className="text-[10px] text-neutral-600">— {table.name}</span>
+                </div>
+                {/* Mode toggle */}
+                <div className="inline-flex rounded border border-white/10 overflow-hidden text-[10px]">
+                  {(["unified", "per_zone", "synchronized"] as MockupMode[]).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setMockupMode(m)}
+                      className={`px-2 py-1 transition-colors ${
+                        mockupMode === m
+                          ? "bg-blue-500/20 text-blue-200"
+                          : "bg-transparent text-neutral-500 hover:text-white"
+                      }`}
+                    >
+                      {m === "unified"
+                        ? "連結"
+                        : m === "per_zone"
+                        ? "席ごと"
+                        : "同期"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="p-4 space-y-3">
+                {/* Scene selector */}
+                {mockupMode !== "per_zone" && storyboard.scenes.length > 1 && (
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <span className="text-[10px] text-neutral-500 mr-1">シーン:</span>
+                    {storyboard.scenes.map((s, i) => {
+                      const ready = s.video_status === "complete";
+                      const active = i === mockupSceneIdx;
+                      return (
+                        <button
+                          key={s.id}
+                          onClick={() => setMockupSceneIdx(i)}
+                          disabled={!ready}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
+                            active
+                              ? "bg-blue-500/20 border-blue-400/40 text-blue-200"
+                              : "bg-transparent border-white/10 text-neutral-500 hover:text-white disabled:opacity-30"
+                          }`}
+                        >
+                          #{i + 1}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <TableMockup
+                  table={table}
+                  mode={mockupMode}
+                  maxHeight={280}
+                  showProjectorOverlay
+                  sources={
+                    mockupMode === "per_zone"
+                      ? {
+                          byZone: Object.fromEntries(
+                            storyboard.scenes
+                              .slice(0, table.zone_count)
+                              .map((s, i) => [i, mediaUrl(s.video_path)])
+                          ),
+                        }
+                      : mockupMode === "synchronized"
+                      ? { sync: mediaUrl(storyboard.scenes[mockupSceneIdx]?.video_path ?? null) }
+                      : { unified: mediaUrl(storyboard.scenes[mockupSceneIdx]?.video_path ?? null) }
+                  }
+                />
+                <p className="text-[10px] text-neutral-500 leading-relaxed">
+                  {mockupMode === "unified" &&
+                    "連結モード: テーブル全幅 (1動画) で再生。複数席を連続したパノラマ的演出。"}
+                  {mockupMode === "per_zone" &&
+                    "席ごとモード: ゾーン毎に異なる動画を再生。シーンの順 (#1, #2, ...) が席に対応します。"}
+                  {mockupMode === "synchronized" &&
+                    "同期モード: 全席で同じ動画を同時再生。テーブル全体で揃った演出。"}
+                </p>
+              </div>
+            </section>
           )}
 
           {/* ─ Video grid ─ */}
