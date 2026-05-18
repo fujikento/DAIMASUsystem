@@ -80,19 +80,16 @@ function _timeoutMs(path: string): number {
 }
 
 /**
- * 管理画面用 API key を localStorage から取得 (codex round 8 P1)。
- * Settings 画面で保存させる想定。env NEXT_PUBLIC_ADMIN_API_KEY からの fallback もあり。
+ * 管理画面用 API key を localStorage から取得 (Phase 1.2 auth)。
+ * codex P1: NEXT_PUBLIC_* 経由は public bundle に embed されるため使わない。
+ * Settings 画面で localStorage に保存させる想定。
  */
 function _getAdminApiKey(): string {
   if (typeof window === "undefined") return "";
   try {
-    return (
-      window.localStorage.getItem("DAIMASU_ADMIN_API_KEY") ||
-      process.env.NEXT_PUBLIC_ADMIN_API_KEY ||
-      ""
-    );
+    return window.localStorage.getItem("DAIMASU_ADMIN_API_KEY") || "";
   } catch {
-    return process.env.NEXT_PUBLIC_ADMIN_API_KEY || "";
+    return "";
   }
 }
 

@@ -654,6 +654,127 @@ async def unblackout(show_id: int) -> dict:
         return {"ok": False, "error": str(e), "show_id": show_id}
 
 
+@router.get("/{show_id}/rehearsal/validate")
+async def validate_show_for_rehearsal(show_id: int, db: Session = Depends(get_db)) -> dict:
+    """ライブ投入前の事前検証 — 全 cue が成立するか、content 不足や duration ズレが
+    無いかを返す。actual 投入なし。
+
+    検査:
+      1. show が存在し cue を 1 個以上持つ
+      2. 各 cue の content_path が指すファイルが存在し video QC 通る
+         (期待解像度なし、duration ≧ cue.duration_seconds × 0.5 を warning)
+      3. auto_follow cue の duration + auto_follow_delay 累計から total runtime を算出
+      4. transition / trigger cue の引数が妥当か
+
+    返す形:
+      {
+        ok: bool,
+        total_runtime_seconds: float,
+        cues: [
+          {cue_id, cue_number, cue_type, content_path, ok, errors, warnings, qc?},
+          ...
+        ],
+        summary: {n_cues, n_ok, n_warning, n_error}
+      }
+    """
+    from api.services.content_qc import qc_video as _qc
+
+    show = db.query(Show).filter(Show.id == show_id).first()
+    if not show:
+        raise HTTPException(404, "Show not found")
+    cues = (
+        db.query(ShowCue)
+        .filter(ShowCue.show_id == show_id)
+        .order_by(ShowCue.sort_order)
+        .all()
+    )
+    if not cues:
+        return {
+            "ok": False,
+            "total_runtime_seconds": 0,
+            "cues": [],
+            "summary": {"n_cues": 0, "n_ok": 0, "n_warning": 0, "n_error": 1},
+            "errors": ["no_cues_defined"],
+        }
+
+    cue_results: list[dict] = []
+    total_runtime = 0.0
+    n_ok = n_warn = n_err = 0
+
+    for c in cues:
+        entry: dict = {
+            "cue_id": c.id,
+            "cue_number": c.cue_number,
+            "cue_type": c.cue_type,
+            "content_path": c.content_path,
+            "duration_seconds": c.duration_seconds,
+            "auto_follow": c.auto_follow,
+            "auto_follow_delay": c.auto_follow_delay,
+            "errors": [],
+            "warnings": [],
+        }
+        # total runtime 計算
+        if c.auto_follow:
+            total_runtime += float(c.duration_seconds + (c.auto_follow_delay or 0))
+        else:
+            total_runtime += float(c.duration_seconds)
+
+        # content cue は video file の QC
+        if c.cue_type == "content":
+            if not c.content_path:
+                entry["errors"].append("content_path_missing")
+            else:
+                try:
+                    qc = await _qc(
+                        path=c.content_path,
+                        expected_duration_seconds=float(c.duration_seconds),
+                        duration_tolerance_pct=0.30,  # cue は意図的に長め短めあり
+                        check_black=False,  # rehearsal validate では速さ重視で skip
+                    )
+                    entry["qc"] = {
+                        "ok": qc.ok,
+                        "width": qc.width, "height": qc.height,
+                        "duration": qc.duration_seconds,
+                        "errors": qc.errors, "warnings": qc.warnings,
+                    }
+                    if not qc.ok:
+                        entry["errors"].extend(qc.errors)
+                    entry["warnings"].extend(qc.warnings)
+                except Exception as e:
+                    entry["errors"].append(f"qc_failed: {e}")
+        elif c.cue_type == "transition":
+            if not c.transition:
+                entry["warnings"].append("transition_type_unspecified")
+        elif c.cue_type == "trigger":
+            if not c.content_path:
+                entry["warnings"].append("trigger_content_path_missing (BGM trigger needs path)")
+        elif c.cue_type == "wait":
+            pass  # 待機 cue は何もチェックしない
+        else:
+            entry["warnings"].append(f"unknown_cue_type: {c.cue_type}")
+
+        entry["ok"] = not entry["errors"]
+        if entry["errors"]:
+            n_err += 1
+        elif entry["warnings"]:
+            n_warn += 1
+        else:
+            n_ok += 1
+        cue_results.append(entry)
+
+    return {
+        "ok": n_err == 0,
+        "total_runtime_seconds": round(total_runtime, 1),
+        "cues": cue_results,
+        "summary": {
+            "n_cues": len(cues),
+            "n_ok": n_ok,
+            "n_warning": n_warn,
+            "n_error": n_err,
+        },
+    }
+
+
 @router.get("/{show_id}/status", response_model=ShowStatusResponse)
 def get_show_status(show_id: int, db: Session = Depends(get_db)):
     """リアルタイムステータス取得"""

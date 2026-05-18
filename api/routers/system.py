@@ -203,6 +203,72 @@ def get_rehearsal_log(limit: int = 100) -> dict[str, Any]:
     }
 
 
+@router.post("/qc/video")
+async def qc_video_endpoint(
+    payload: dict,
+) -> dict[str, Any]:
+    """生成 video の QC を ad-hoc に叩く。
+
+    payload 例:
+        {"path": "/path/to/scene_main.mp4",
+         "expected_width": 5520, "expected_height": 1200,
+         "expected_duration_seconds": 10, "check_black": true}
+
+    codex round 5 P2: arbitrary path を local file oracle にしないため、
+    touchdesigner/content/ または api/uploads/ 配下に resolve() 結果を
+    限定する。
+    """
+    from pathlib import Path as _Path
+    from fastapi import HTTPException
+    from api.services.content_qc import qc_video as _qc
+
+    path = payload.get("path") or ""
+    if not path:
+        raise HTTPException(400, "path is required")
+
+    project_root = _Path(__file__).resolve().parent.parent.parent
+    allowed_roots = [
+        (project_root / "touchdesigner" / "content").resolve(),
+        (project_root / "api" / "uploads").resolve(),
+    ]
+    try:
+        resolved = _Path(path).resolve(strict=False)
+    except (OSError, RuntimeError) as e:
+        raise HTTPException(400, f"path cannot be resolved: {e}")
+
+    if not any(
+        str(resolved).startswith(str(root) + os.sep) or resolved == root
+        for root in allowed_roots
+    ):
+        raise HTTPException(
+            400,
+            f"path must be under one of: {[str(r) for r in allowed_roots]} (got: {resolved})",
+        )
+
+    result = await _qc(
+        path=str(resolved),
+        expected_width=payload.get("expected_width"),
+        expected_height=payload.get("expected_height"),
+        expected_duration_seconds=payload.get("expected_duration_seconds"),
+        duration_tolerance_pct=payload.get("duration_tolerance_pct", 0.20),
+        max_black_dominance=payload.get("max_black_dominance", 0.50),
+        check_black=payload.get("check_black", True),
+    )
+    return {
+        "ok": result.ok,
+        "file_path": result.file_path,
+        "width": result.width,
+        "height": result.height,
+        "duration_seconds": result.duration_seconds,
+        "fps": result.fps,
+        "has_audio": result.has_audio,
+        "file_size_bytes": result.file_size_bytes,
+        "black_dominance_percent": result.black_dominance_percent,
+        "warnings": result.warnings,
+        "errors": result.errors,
+    }
+
+
 @router.get("/system/info")
 def system_info() -> dict[str, Any]:
     """自己診断 — version / git sha / 環境設定 / 現在時刻"""
