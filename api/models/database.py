@@ -5,7 +5,12 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 import os
 
 DATABASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATABASE_URL = f"sqlite:///{os.path.join(DATABASE_DIR, 'dining.db')}"
+# Phase 3 test infra: DATABASE_URL env を尊重 (テストで isolated DB を使うため)。
+# 未設定なら従来通り project/dining.db。
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    f"sqlite:///{os.path.join(DATABASE_DIR, 'dining.db')}",
+)
 
 engine = create_engine(
     DATABASE_URL,

@@ -51,12 +51,21 @@ def _is_unauthenticated_path(path: str) -> bool:
 
 
 class APIKeyAuthMiddleware(BaseHTTPMiddleware):
-    """API key by `X-API-Key` header. CORS preflight (OPTIONS) は素通し。"""
+    """API key by `X-API-Key` header. CORS preflight (OPTIONS) は素通し。
+
+    ADMIN_API_KEY は __init__ で cache せず、毎リクエストで env を読む。
+    これにより:
+      - テストで monkeypatch.setenv が即座に反映される
+      - 運用中に env をリロードして key rotation できる (systemctl reload 等)
+    """
 
     def __init__(self, app: ASGIApp, expected_key: str | None = None) -> None:
         super().__init__(app)
-        self.expected_key = (expected_key or os.environ.get("ADMIN_API_KEY") or "").strip()
-        if not self.expected_key:
+        # 起動時 1 度のみ警告 (毎回出すとログがうるさい)
+        # expected_key 引数指定時はそれを優先 (テスト用シーム)
+        self._init_override = (expected_key or "").strip() or None
+        startup_key = self._current_key()
+        if not startup_key:
             logger.warning(
                 "[AUTH] ADMIN_API_KEY is not set — auth middleware running in OPEN mode. "
                 "Set ADMIN_API_KEY env (or .env) before production deployment."
@@ -65,13 +74,20 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
             logger.info(
                 "[AUTH] ADMIN_API_KEY configured (len=%d). All /api/* endpoints require "
                 "'X-API-Key' header except: %s",
-                len(self.expected_key),
+                len(startup_key),
                 ", ".join(UNAUTHENTICATED_PATH_PREFIXES),
             )
 
+    def _current_key(self) -> str:
+        if self._init_override is not None:
+            return self._init_override
+        return (os.environ.get("ADMIN_API_KEY") or "").strip()
+
     async def dispatch(self, request: Request, call_next):
+        expected = self._current_key()
+
         # OPEN mode: key 未設定なら誰でも通す (backward compat)
-        if not self.expected_key:
+        if not expected:
             return await call_next(request)
 
         # CORS preflight は常に通す
@@ -92,7 +108,7 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
                     "code": "no_api_key",
                 },
             )
-        if not hmac.compare_digest(supplied, self.expected_key):
+        if not hmac.compare_digest(supplied, expected):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Invalid API key.", "code": "invalid_api_key"},
