@@ -1341,6 +1341,10 @@ function ImagePreviewStep({
   const [genStatus, setGenStatus] = useState<GenerationStatus | null>(null);
   const [selectedSceneIdx, setSelectedSceneIdx] = useState<number | null>(null);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  // chain_style — gpt-image-2 のときのみ意味あり (default ON でシーン間 style 一貫)
+  const [chainStyle, setChainStyle] = useState(true);
+  // chain 実行中の現在 scene 位置 (SSE 由来) — null=非 chain or 完了
+  const [chainPosition, setChainPosition] = useState<{ current: number; total: number } | null>(null);
   const abortRef = useRef(false);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -1349,6 +1353,8 @@ function ImagePreviewStep({
   const allReady = scenes.length > 0 && scenes.every((s) => s.image_status === "ready" || s.image_status === "complete");
   // Whether there are any scenes that "Generate All" can actually process
   const hasGenerableScenes = scenes.some((s) => s.image_status === "pending" || s.image_status === "failed");
+  // gpt-image-2 / Auto (空文字 → backend smart-default で gpt-image-2 になる可能性) のとき chain toggle を露出
+  const isPotentiallyGptImage2 = imageProvider === "" || imageProvider === "gpt_image_2";
 
   // Auto-select the first ready scene when none is selected
   useEffect(() => {
@@ -1366,6 +1372,20 @@ function ImagePreviewStep({
     abortRef.current = false;
     return () => { abortRef.current = true; };
   }, []);
+
+  // Option C — chain_progress SSE 購読: gpt-image-2 chain 中の scene 位置を live 表示
+  useEffect(() => {
+    const unsubscribe = subscribeToStoryboardEvents((event) => {
+      if (event.type !== "chain_progress") return;
+      if (event.storyboard_id !== storyboard.id) return;
+      if (event.done) {
+        setChainPosition(null);
+      } else {
+        setChainPosition({ current: event.current, total: event.total });
+      }
+    });
+    return () => unsubscribe();
+  }, [storyboard.id]);
 
   // ポーリング: storyboard直接更新（サイドバー再取得なし）で軽量・高速に
   const storyboardIdRef = useRef(storyboard.id);
@@ -1466,12 +1486,18 @@ function ImagePreviewStep({
   }
 
   async function handleGenerateAll() {
-    console.log(`handleGenerateAll START id=${storyboard.id} provider=${imageProvider}`);
+    console.log(`handleGenerateAll START id=${storyboard.id} provider=${imageProvider} chain=${chainStyle}`);
     setGeneratingAll(true);
     setGenerateError(null);
+    setChainPosition(null);
     try {
       console.log("POST generate-images...");
-      const result = await generateStoryboardImages(storyboard.id, imageProvider);
+      // gpt-image-2 / Auto のときだけ chain_style を送る (他 provider では backend で無視される)
+      const result = await generateStoryboardImages(
+        storyboard.id,
+        imageProvider,
+        isPotentiallyGptImage2 ? chainStyle : undefined,
+      );
       console.log(`POST OK: ${JSON.stringify(result)}`);
       console.log("pollUntilDone start...");
       await pollUntilDone();
@@ -1540,6 +1566,27 @@ function ImagePreviewStep({
           <option value="gemini_pro">Gemini Pro (高品質)</option>
           <option value="imagen">Imagen 4 Fast (最速)</option>
         </select>
+
+        {/* Style chain toggle — gpt-image-2 / Auto のときだけ表示 */}
+        {isPotentiallyGptImage2 && (
+          <label
+            className="flex items-center gap-2 px-3 py-2 bg-[#132040] border border-blue-400/[0.10] rounded-xl text-sm text-slate-300 cursor-pointer hover:border-blue-400/30"
+            title="ON: scene[N-1] の出力を scene[N] の参照画像として渡し、style を引き継いで生成する (serial 実行で時間がかかるが style 一貫性最大化)。OFF: 並列生成で速いが scene 間で見た目が変わる可能性。"
+          >
+            <input
+              type="checkbox"
+              checked={chainStyle}
+              onChange={(e) => setChainStyle(e.target.checked)}
+              disabled={scenes.length === 0 || generatingAll}
+              className="w-4 h-4 accent-blue-500"
+            />
+            <span className="text-xs">style chain</span>
+            {chainStyle && (
+              <span className="text-[10px] text-blue-400">(serial)</span>
+            )}
+          </label>
+        )}
+
         <button
           onClick={handleGenerateAll}
           disabled={generatingAll || scenes.length === 0 || (!hasGenerableScenes && !generatingAll)}
@@ -1559,6 +1606,14 @@ function ImagePreviewStep({
           )}
           全画像を生成
         </button>
+
+        {/* Chain 進捗ライブ表示 (Option C で SSE 経由更新) */}
+        {chainPosition && generatingAll && (
+          <span className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/[0.10] border border-blue-400/30 rounded-lg text-xs text-blue-300">
+            <Loader2 size={11} className="animate-spin" />
+            chain 中: scene {chainPosition.current}/{chainPosition.total}
+          </span>
+        )}
         {scenes.length === 0 && (
           <span className="text-xs text-amber-400 flex items-center gap-1.5">
             シーンがありません。Step 1 でシーンを追加してください。

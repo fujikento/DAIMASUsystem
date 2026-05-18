@@ -754,11 +754,16 @@ export async function reorderScenes(
 
 export async function generateStoryboardImages(
   storyboardId: number,
-  provider?: string
+  provider?: string,
+  chainStyle?: boolean
 ): Promise<JobStatus> {
   // 空文字 / undefined は "auto" として扱い、backend smart-default にゆだねる
   // (OPENAI_API_KEY 有 → gpt_image_2、無 → imagen)。明示指定があるときだけ送る。
-  const body = provider ? { provider } : {};
+  // chainStyle は gpt-image-2 のとき有効 (scene[N-1] を scene[N] の reference にする)。
+  // 未指定なら backend default (true) のまま。
+  const body: Record<string, unknown> = {};
+  if (provider) body.provider = provider;
+  if (chainStyle !== undefined) body.chain_style = chainStyle;
   return apiFetch(`/api/storyboards/${storyboardId}/generate-images`, {
     method: "POST",
     body: JSON.stringify(body),
@@ -955,6 +960,16 @@ export type StoryboardEvent =
       video_path?: string | null;
     }
   | { type: "storyboard_updated"; storyboard_id: number; status: string }
+  | {
+      // gpt-image-2 style chain の進捗 — UI が「scene N/M を chain 中」を表示するため
+      type: "chain_progress";
+      storyboard_id: number;
+      current: number;
+      total: number;
+      scene_id: number | null;
+      has_reference: boolean;
+      done?: boolean;
+    }
   | { type: "connected" };
 
 /**
@@ -979,6 +994,14 @@ export function subscribeToStoryboardEvents(
   eventSource.addEventListener("storyboard_updated", (e: MessageEvent) => {
     try {
       onEvent({ type: "storyboard_updated", ...JSON.parse(e.data) });
+    } catch {
+      // JSONパースエラーは無視
+    }
+  });
+
+  eventSource.addEventListener("chain_progress", (e: MessageEvent) => {
+    try {
+      onEvent({ type: "chain_progress", ...JSON.parse(e.data) });
     } catch {
       // JSONパースエラーは無視
     }

@@ -17,13 +17,17 @@ DEFAULT_SETTINGS = [
     {"key": "RUNWAY_API_KEY", "label": "Runway Gen-4.5 API Key", "category": "api_keys", "is_secret": True},
     {"key": "KLING_API_KEY", "label": "Kling 2.6 API Key", "category": "api_keys", "is_secret": True},
     {"key": "PIKA_API_KEY", "label": "Pika 2.5 API Key", "category": "api_keys", "is_secret": True},
-    {"key": "OPENAI_API_KEY", "label": "OpenAI API Key", "category": "api_keys", "is_secret": True},
+    {"key": "OPENAI_API_KEY", "label": "OpenAI API Key (GPT-Image-2 絵コンテ生成)", "category": "api_keys", "is_secret": True},
     {"key": "LIVEPORTRAIT_PATH", "label": "LivePortrait ローカルパス", "category": "paths", "is_secret": False},
 ]
 
 
 def _seed_defaults(db: Session):
-    """Seed default settings if they don't exist"""
+    """Seed default settings if they don't exist, and refresh labels for known keys.
+
+    Value は触らない (ユーザーが設定済みの API key を上書きしないため)。
+    label/category/is_secret のメタデータだけ DEFAULT_SETTINGS に揃える。
+    """
     for item in DEFAULT_SETTINGS:
         existing = db.query(AppSetting).filter(AppSetting.key == item["key"]).first()
         if not existing:
@@ -35,6 +39,11 @@ def _seed_defaults(db: Session):
                 is_secret=item["is_secret"],
             )
             db.add(setting)
+        else:
+            # メタデータ refresh (label の改名等を既存 row にも反映)
+            existing.label = item["label"]
+            existing.category = item["category"]
+            existing.is_secret = item["is_secret"]
     db.commit()
 
 

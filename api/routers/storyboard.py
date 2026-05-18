@@ -1231,8 +1231,17 @@ async def generate_images(
                 # filesystem ref に変換するため _image_service.output_dir を流用する。
                 previous_fs_path: Optional[str] = None
                 results: list[Optional[Exception]] = [None] * len(scene_data)
+                _total = len(scene_data)
                 for i, scene_info in enumerate(scene_data):
                     refs = [previous_fs_path] if previous_fs_path else None
+                    # Option C — chain 進捗を SSE で前置 push: UI が「scene N/M を chain 中」表示
+                    _notify_clients("chain_progress", {
+                        "storyboard_id": storyboard_id,
+                        "current": i + 1,
+                        "total": _total,
+                        "scene_id": scene_info["id"],
+                        "has_reference": refs is not None,
+                    })
                     try:
                         await _generate_one(scene_info, reference_image_paths=refs)
                         # 次の iteration のために最新の output_path を web ref に変換せず
@@ -1261,6 +1270,15 @@ async def generate_images(
                         print(f"[ImageGen] Style-chain scene {scene_info['id']} failed: {e}")
                         # 失敗時は chain をリセット (壊れた参照を引き継がない)
                         previous_fs_path = None
+                # Chain 完了 — UI が "chain 中" バッジを消せるよう完了 push
+                _notify_clients("chain_progress", {
+                    "storyboard_id": storyboard_id,
+                    "current": _total,
+                    "total": _total,
+                    "scene_id": None,
+                    "has_reference": False,
+                    "done": True,
+                })
             else:
                 # Provider-specific concurrency strategy (既存): 5 concurrent + stagger.
                 is_gemini = image_provider_str in ("gemini", "gemini_pro")
