@@ -22,7 +22,7 @@ export default function RootLayout({
   return (
     <html lang="ja" className="dark">
       <body
-        className={`${inter.variable} font-sans antialiased bg-[#080f1a] text-white min-h-screen`}
+        className={`${inter.variable} font-sans antialiased bg-[#0a0d12] text-white min-h-screen`}
       >
         <AdminKeyGate />
         <ConditionalShell>{children}</ConditionalShell>

@@ -8,9 +8,7 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertTriangle,
-  Sparkles,
   Play,
-  PartyPopper,
 } from "lucide-react";
 import Link from "next/link";
 import {
@@ -19,14 +17,6 @@ import {
   regenerateSceneVideo,
   type StoryboardData,
 } from "@/lib/api";
-
-const COURSE_EMOJI: Record<string, string> = {
-  welcome: "🌸",
-  appetizer: "🥗",
-  soup: "🍲",
-  main: "🍖",
-  dessert: "🍰",
-};
 
 const COURSE_JP: Record<string, string> = {
   welcome: "ウェルカム",
@@ -121,35 +111,23 @@ export default function Step4Video({ storyboard, onReload, onBack }: Props) {
   return (
     <div className="space-y-6">
       {/* ─ Step intro ─ */}
-      <div className="text-center space-y-1.5">
-        {allDone ? (
-          <>
-            <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-emerald-500/15 border-2 border-emerald-500/40 mb-2">
-              <PartyPopper size={26} className="text-emerald-300" />
-            </div>
-            <h2 className="text-2xl font-bold text-white">
-              完成しました!
-            </h2>
-            <p className="text-neutral-400 text-sm">
-              これで投影できます。投影画面で再生してみてください。
-            </p>
-          </>
-        ) : (
-          <>
-            <h2 className="text-2xl font-bold text-white">
-              {!someDone
-                ? "動画にしましょう"
-                : inProgress
-                ? "動画を生成中..."
-                : "動画を確認"}
-            </h2>
-            <p className="text-neutral-400 text-sm">
-              {!someDone
-                ? `画像を5秒の動画に変換します(1シーン約60-120秒、コスト合計 ~$${estCost})`
-                : `${completedCount} / ${storyboard.scenes.length} 完成`}
-            </p>
-          </>
-        )}
+      <div className="space-y-1">
+        <h2 className="text-xl font-semibold text-white">
+          {allDone
+            ? "動画生成完了"
+            : !someDone
+            ? "動画生成"
+            : inProgress
+            ? "動画生成中"
+            : "動画一覧"}
+        </h2>
+        <p className="text-neutral-500 text-sm">
+          {allDone
+            ? "投影画面から再生できます。"
+            : !someDone
+            ? `画像を 5秒の動画に変換します。1シーン約 60-120秒。コスト合計 約 $${estCost}。`
+            : `${completedCount} / ${storyboard.scenes.length} 完成`}
+        </p>
       </div>
 
       {/* ─ Error display ─ */}
@@ -162,35 +140,29 @@ export default function Step4Video({ storyboard, onReload, onBack }: Props) {
 
       {/* ─ Initial CTA ─ */}
       {!someDone && !inProgress ? (
-        <div className="rounded-3xl bg-gradient-to-br from-purple-900/30 to-pink-900/15 border-2 border-dashed border-purple-400/30 p-10 text-center space-y-4">
-          <div className="w-16 h-16 rounded-2xl bg-purple-600/20 border border-purple-400/30 mx-auto flex items-center justify-center">
-            <Video size={28} className="text-purple-300" />
+        <div className="rounded-xl bg-[#0e1d32] border border-blue-400/15 p-8 text-center space-y-3">
+          <p className="text-white text-sm font-medium">
+            {storyboard.scenes.length} 件の動画を生成します
+          </p>
+          <p className="text-xs text-neutral-500">
+            合計所要時間 約 5-15分。バックグラウンドで処理されます。
+          </p>
+          <div className="pt-1">
+            <button
+              onClick={startBatchVideo}
+              disabled={batchLoading}
+              className="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-60"
+            >
+              {batchLoading ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  開始中
+                </>
+              ) : (
+                "生成を開始"
+              )}
+            </button>
           </div>
-          <div className="space-y-1">
-            <p className="text-white font-semibold">
-              画像を動画にしますか?
-            </p>
-            <p className="text-xs text-neutral-400">
-              5-15分かかります。他の画面に移っても続行します。
-            </p>
-          </div>
-          <button
-            onClick={startBatchVideo}
-            disabled={batchLoading}
-            className="inline-flex items-center gap-2 px-8 py-4 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-base shadow-xl shadow-purple-900/40 transition-all hover:scale-[1.02] active:scale-[0.99] disabled:opacity-60"
-          >
-            {batchLoading ? (
-              <>
-                <Loader2 size={18} className="animate-spin" />
-                開始中...
-              </>
-            ) : (
-              <>
-                <Sparkles size={18} />
-                動画を生成する
-              </>
-            )}
-          </button>
         </div>
       ) : (
         <>
@@ -276,9 +248,6 @@ export default function Step4Video({ storyboard, onReload, onBack }: Props) {
                       <span className="w-5 h-5 rounded bg-blue-500/15 text-[9px] font-bold text-blue-300 flex items-center justify-center">
                         {idx + 1}
                       </span>
-                      <span className="text-base leading-none">
-                        {COURSE_EMOJI[scene.course_key] ?? "🍽"}
-                      </span>
                       <span className="text-xs font-medium text-white">
                         {COURSE_JP[scene.course_key] ?? scene.course_key}
                       </span>
@@ -317,15 +286,15 @@ export default function Step4Video({ storyboard, onReload, onBack }: Props) {
         {allDone ? (
           <Link
             href="/control"
-            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-base shadow-lg shadow-emerald-900/40 transition-all hover:scale-[1.02] active:scale-[0.99]"
+            className="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors"
           >
-            <Play size={18} />
+            <Play size={14} />
             投影画面を開く
           </Link>
         ) : (
           <Link
             href="/create"
-            className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-neutral-300 font-medium text-sm transition-colors"
+            className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-neutral-300 text-sm transition-colors"
           >
             一覧に戻る
           </Link>

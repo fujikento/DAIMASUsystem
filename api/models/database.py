@@ -104,6 +104,27 @@ def init_db():
         # storyboards: style_reference / style_seed for fal.ai consistency
         _add_column_if_missing(conn, "storyboards", "style_reference_path", "TEXT")
         _add_column_if_missing(conn, "storyboards", "style_seed", "INTEGER")
+        # storyboards: 席 (テーブル) との紐付け
+        _add_column_if_missing(conn, "storyboards", "projection_config_id", "INTEGER")
+
+        # projection_config: multi-row 拡張 — name / is_default / note / created_at
+        _add_column_if_missing(conn, "projection_config", "name", "VARCHAR DEFAULT 'メインテーブル'")
+        _add_column_if_missing(conn, "projection_config", "is_default", "BOOLEAN DEFAULT 0")
+        _add_column_if_missing(conn, "projection_config", "note", "TEXT")
+        _add_column_if_missing(conn, "projection_config", "created_at", "DATETIME")
+        # 既存の単一行に名前 + デフォルトフラグを補填 (NULL の場合のみ)
+        try:
+            conn.execute(text(
+                "UPDATE projection_config SET name = 'メインテーブル' WHERE name IS NULL OR name = ''"
+            ))
+            # is_default が誰にも立っていなければ最初の行を default に
+            row = conn.execute(text("SELECT COUNT(*) FROM projection_config WHERE is_default = 1")).fetchone()
+            if row and row[0] == 0:
+                conn.execute(text(
+                    "UPDATE projection_config SET is_default = 1 WHERE id = (SELECT MIN(id) FROM projection_config)"
+                ))
+        except Exception as e:
+            print(f"[DB Migration] projection_config default backfill: {e}")
 
         # storyboards: day_of_week / theme を nullable にする
         # SQLiteは既存カラムのNOT NULL制約を変更できないため、テーブル再作成で対応

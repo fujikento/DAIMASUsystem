@@ -109,9 +109,15 @@ class PlaybackLog(Base):
 
 
 class ProjectionConfig(Base):
+    """
+    席 (テーブル) 単位のプロジェクション設定。
+    旧来は singleton (1 行) だったが multi-row 対応で複数席を保持可能。
+    """
     __tablename__ = "projection_config"
 
     id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, default="メインテーブル")
+    is_default = Column(Boolean, nullable=False, default=False)
     pj_width = Column(Integer, nullable=False, default=1920)
     pj_height = Column(Integer, nullable=False, default=1200)
     pj_count = Column(Integer, nullable=False, default=3)
@@ -119,6 +125,8 @@ class ProjectionConfig(Base):
     zone_count = Column(Integer, nullable=False, default=4)
     table_width_mm = Column(Integer, nullable=False, default=8120)
     table_height_mm = Column(Integer, nullable=False, default=600)
+    note = Column(Text, nullable=True)  # 自由メモ (位置 / 客層 等)
+    created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
@@ -291,9 +299,11 @@ class ProjectionStatusResponse(BaseModel):
     current_content: Optional[str] = None
 
 
-# ProjectionConfig
+# ProjectionConfig — 席 (テーブル) 単位
 class ProjectionConfigResponse(BaseModel):
     id: int
+    name: str
+    is_default: bool = False
     pj_width: int
     pj_height: int
     pj_count: int
@@ -301,17 +311,33 @@ class ProjectionConfigResponse(BaseModel):
     zone_count: int
     table_width_mm: int
     table_height_mm: int
+    note: Optional[str] = None
     # computed fields
     full_width: int
     full_height: int
     zone_width: int
     zone_height: int
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
 
+class ProjectionConfigCreate(BaseModel):
+    name: str
+    pj_width: int = 1920
+    pj_height: int = 1200
+    pj_count: int = 3
+    blend_overlap: int = 120
+    zone_count: int = 4
+    table_width_mm: int = 8120
+    table_height_mm: int = 600
+    note: Optional[str] = None
+    is_default: bool = False
+
+
 class ProjectionConfigUpdate(BaseModel):
+    name: Optional[str] = None
     pj_width: Optional[int] = None
     pj_height: Optional[int] = None
     pj_count: Optional[int] = None
@@ -319,6 +345,8 @@ class ProjectionConfigUpdate(BaseModel):
     zone_count: Optional[int] = None
     table_width_mm: Optional[int] = None
     table_height_mm: Optional[int] = None
+    note: Optional[str] = None
+    is_default: Optional[bool] = None
 
 
 # ─── Storyboard ORM Models ────────────────────────────────────────────────────
@@ -337,6 +365,8 @@ class Storyboard(Base):
     # Status: draft → script_ready → images_generating → images_ready → video_generating → video_ready
     style_reference_path = Column(Text, nullable=True)    # Style reference image path for fal.ai
     style_seed = Column(Integer, nullable=True)           # Seed for style consistency across scenes
+    # この台本が向けて作られた席 (テーブル) — 動画解像度の根拠
+    projection_config_id = Column(Integer, ForeignKey("projection_config.id"), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -629,6 +659,7 @@ class StoryboardCreate(BaseModel):
     provider: str = "runway"
     auto_generate_scenes: bool = False   # Default: empty storyboard
     style_seed: Optional[int] = None     # Seed for style consistency across scenes
+    projection_config_id: Optional[int] = None  # どの席 (テーブル) 用に作るか
 
 
 class StoryboardResponse(BaseModel):
@@ -641,6 +672,7 @@ class StoryboardResponse(BaseModel):
     status: str
     style_reference_path: Optional[str] = None
     style_seed: Optional[int] = None
+    projection_config_id: Optional[int] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     scenes: list[StoryboardSceneResponse] = []
@@ -656,6 +688,7 @@ class StoryboardListResponse(BaseModel):
     provider: str
     status: str
     style_seed: Optional[int] = None
+    projection_config_id: Optional[int] = None
     created_at: datetime
     model_config = {"from_attributes": True}
 

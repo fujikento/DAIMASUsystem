@@ -3,12 +3,10 @@
 import { useState } from "react";
 import {
   ChevronRight,
-  Wand2,
   Loader2,
   Edit3,
   Save,
   X,
-  Sparkles,
   Utensils,
 } from "lucide-react";
 import {
@@ -18,12 +16,12 @@ import {
   type StoryboardScene,
 } from "@/lib/api";
 
-const COURSE_LABEL: Record<string, { jp: string; emoji: string }> = {
-  welcome: { jp: "ウェルカム", emoji: "🌸" },
-  appetizer: { jp: "前菜", emoji: "🥗" },
-  soup: { jp: "スープ", emoji: "🍲" },
-  main: { jp: "メイン", emoji: "🍖" },
-  dessert: { jp: "デザート", emoji: "🍰" },
+const COURSE_LABEL: Record<string, string> = {
+  welcome: "ウェルカム",
+  appetizer: "前菜",
+  soup: "スープ",
+  main: "メイン",
+  dessert: "デザート",
 };
 
 interface Props {
@@ -55,58 +53,48 @@ export default function Step2Script({ storyboard, onReload, onNext }: Props) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* ─ Step intro ─ */}
-      <div className="text-center space-y-1.5">
-        <h2 className="text-2xl font-bold text-white">
-          どんなお話にしますか?
-        </h2>
-        <p className="text-neutral-400 text-sm">
-          各料理のシーンを書きます。テーマのテンプレートが入っているのでこのまま次へも、AIに書かせるのも、自分で編集するのも自由です。
+      <div className="space-y-1">
+        <h2 className="text-lg font-semibold text-white">台本</h2>
+        <p className="text-xs text-neutral-500">
+          各シーンを編集します。テーマのテンプレートが入っているのでそのまま次へも、AI で書き直しも可能。
         </p>
       </div>
 
-      {/* ─ AI generate card ─ */}
-      <div className="rounded-2xl bg-gradient-to-br from-purple-900/30 via-blue-900/20 to-blue-900/10 border border-purple-400/20 p-5 space-y-4">
-        <div className="flex items-start gap-3">
-          <div className="w-10 h-10 rounded-xl bg-purple-500/20 border border-purple-400/30 flex items-center justify-center shrink-0">
-            <Wand2 size={18} className="text-purple-300" />
-          </div>
-          <div className="flex-1">
-            <h3 className="text-white font-semibold text-sm">
-              AIに台本を書かせる(おすすめ)
-            </h3>
-            <p className="text-neutral-400 text-xs mt-1 leading-relaxed">
-              テーマに沿った映像のシーンをAIが自動で書きます。雰囲気だけ伝えても OK。
-            </p>
-          </div>
+      {/* ─ Script auto-generation card (flat, neutral) ─ */}
+      <div className="rounded-xl bg-[#0e1d32] border border-blue-400/10 p-4 space-y-3">
+        <div className="space-y-0.5">
+          <h3 className="text-white font-semibold text-sm">
+            自動で台本を書かせる
+          </h3>
+          <p className="text-neutral-500 text-xs leading-relaxed">
+            テーマに沿ったシーン内容を自動生成します。任意で雰囲気を指定できます。
+          </p>
         </div>
 
         {showConceptInput ? (
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             <textarea
               value={concept}
               onChange={(e) => setConcept(e.target.value)}
-              placeholder="例:満月の夜、桜が舞い散る幻想的な雰囲気で(空欄でもOK)"
+              placeholder="任意:雰囲気の指示(例:満月の夜、和の静謐な雰囲気)"
               rows={3}
-              className="w-full bg-[#0a1628] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-neutral-600 focus:border-purple-400/50 focus:outline-none resize-none"
+              className="w-full bg-[#080f1a] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-neutral-600 focus:border-blue-400/40 focus:outline-none resize-none"
             />
             <div className="flex gap-2">
               <button
                 onClick={handleAIGenerate}
                 disabled={genLoading}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-sm font-semibold transition-colors disabled:opacity-60"
+                className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors disabled:opacity-60"
               >
                 {genLoading ? (
                   <>
-                    <Loader2 size={14} className="animate-spin" />
-                    生成中(15-30秒)...
+                    <Loader2 size={13} className="animate-spin" />
+                    生成中(15-30秒)
                   </>
                 ) : (
-                  <>
-                    <Sparkles size={14} />
-                    AIに書かせる
-                  </>
+                  "実行"
                 )}
               </button>
               <button
@@ -115,19 +103,18 @@ export default function Step2Script({ storyboard, onReload, onNext }: Props) {
                   setConcept("");
                 }}
                 disabled={genLoading}
-                className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-neutral-400 text-sm transition-colors disabled:opacity-60"
+                className="px-4 py-2 rounded-lg bg-white/5 hover:bg-white/10 text-neutral-400 text-sm transition-colors disabled:opacity-60"
               >
-                やめる
+                キャンセル
               </button>
             </div>
           </div>
         ) : (
           <button
             onClick={() => setShowConceptInput(true)}
-            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-400/30 text-purple-200 text-sm font-semibold transition-colors"
+            className="w-full py-2 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-neutral-200 text-sm font-medium transition-colors"
           >
-            <Wand2 size={14} />
-            AIに書かせる(雰囲気を指示)
+            自動生成を開始
           </button>
         )}
       </div>
@@ -204,7 +191,7 @@ function SceneCard({
   const [description, setDescription] = useState(scene.scene_description_ja ?? "");
   const [saving, setSaving] = useState(false);
 
-  const meta = COURSE_LABEL[scene.course_key] ?? { jp: scene.course_key, emoji: "🍽" };
+  const courseJp = COURSE_LABEL[scene.course_key] ?? scene.course_key;
 
   async function handleSave() {
     setSaving(true);
@@ -234,8 +221,7 @@ function SceneCard({
           <span className="w-6 h-6 rounded-md bg-blue-500/15 border border-blue-400/20 text-[10px] font-bold text-blue-300 flex items-center justify-center">
             {index + 1}
           </span>
-          <span className="text-lg leading-none">{meta.emoji}</span>
-          <span className="text-sm font-semibold text-white">{meta.jp}</span>
+          <span className="text-sm font-semibold text-white">{courseJp}</span>
           {!editing && (
             <button
               onClick={onEdit}

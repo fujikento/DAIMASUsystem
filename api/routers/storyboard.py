@@ -245,6 +245,22 @@ def create_storyboard(data: StoryboardCreate, db: Session = Depends(get_db)):
     if day and not theme:
         theme = DAY_TO_THEME[day]
 
+    # 紐付ける席 (テーブル) を解決:
+    # - 明示指定があればそれを検証して使う
+    # - 無ければ default 席を使う、無ければ最古を使う、それも無ければ NULL
+    from api.models.schemas import ProjectionConfig as _PCModel
+    projection_config_id = data.projection_config_id
+    if projection_config_id is not None:
+        if not db.query(_PCModel).filter(_PCModel.id == projection_config_id).first():
+            raise HTTPException(400, f"projection_config_id {projection_config_id} not found")
+    else:
+        default_pc = (
+            db.query(_PCModel).filter(_PCModel.is_default == True).first()  # noqa: E712
+            or db.query(_PCModel).order_by(_PCModel.id).first()
+        )
+        if default_pc:
+            projection_config_id = default_pc.id
+
     # ストーリーボードを作成（day/theme は nullable）
     storyboard = Storyboard(
         title=title,
@@ -254,6 +270,7 @@ def create_storyboard(data: StoryboardCreate, db: Session = Depends(get_db)):
         provider=data.provider,
         status="draft",
         style_seed=data.style_seed,
+        projection_config_id=projection_config_id,
     )
     db.add(storyboard)
     db.flush()  # IDを確定させる

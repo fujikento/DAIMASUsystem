@@ -9,7 +9,6 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertTriangle,
-  Sparkles,
 } from "lucide-react";
 import {
   generateStoryboardImages,
@@ -18,14 +17,6 @@ import {
   approveStoryboardImages,
   type StoryboardData,
 } from "@/lib/api";
-
-const COURSE_EMOJI: Record<string, string> = {
-  welcome: "🌸",
-  appetizer: "🥗",
-  soup: "🍲",
-  main: "🍖",
-  dessert: "🍰",
-};
 
 const COURSE_JP: Record<string, string> = {
   welcome: "ウェルカム",
@@ -170,35 +161,29 @@ export default function Step3Images({
 
       {/* ─ Initial CTA or grid ─ */}
       {!someDone && !inProgress ? (
-        <div className="rounded-3xl bg-gradient-to-br from-blue-900/30 to-purple-900/20 border-2 border-dashed border-blue-400/30 p-10 text-center space-y-4">
-          <div className="w-16 h-16 rounded-2xl bg-blue-600/20 border border-blue-400/30 mx-auto flex items-center justify-center">
-            <ImageIcon size={28} className="text-blue-300" />
+        <div className="rounded-xl bg-[#0e1d32] border border-blue-400/15 p-8 text-center space-y-3">
+          <p className="text-white text-sm font-medium">
+            {storyboard.scenes.length} 件の画像を生成します
+          </p>
+          <p className="text-xs text-neutral-500">
+            バックグラウンドで処理されます。生成中は他の画面に移動可能です。
+          </p>
+          <div className="pt-1">
+            <button
+              onClick={startBatchGenerate}
+              disabled={batchLoading}
+              className="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-60"
+            >
+              {batchLoading ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  開始中
+                </>
+              ) : (
+                "生成を開始"
+              )}
+            </button>
           </div>
-          <div className="space-y-1">
-            <p className="text-white font-semibold">
-              準備できました!画像を作り始めますか?
-            </p>
-            <p className="text-xs text-neutral-400">
-              生成中は他の画面に移っても大丈夫です(自動保存)
-            </p>
-          </div>
-          <button
-            onClick={startBatchGenerate}
-            disabled={batchLoading}
-            className="inline-flex items-center gap-2 px-8 py-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-base shadow-xl shadow-blue-900/40 transition-all hover:scale-[1.02] active:scale-[0.99] disabled:opacity-60"
-          >
-            {batchLoading ? (
-              <>
-                <Loader2 size={18} className="animate-spin" />
-                開始中...
-              </>
-            ) : (
-              <>
-                <Sparkles size={18} />
-                画像を生成する
-              </>
-            )}
-          </button>
         </div>
       ) : (
         <>
@@ -266,9 +251,6 @@ export default function Step3Images({
                     <div className="flex items-center gap-1.5">
                       <span className="w-5 h-5 rounded bg-blue-500/15 text-[9px] font-bold text-blue-300 flex items-center justify-center">
                         {idx + 1}
-                      </span>
-                      <span className="text-base leading-none">
-                        {COURSE_EMOJI[scene.course_key] ?? "🍽"}
                       </span>
                       <span className="text-xs font-medium text-white">
                         {COURSE_JP[scene.course_key] ?? scene.course_key}

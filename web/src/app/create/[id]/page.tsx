@@ -88,24 +88,25 @@ export default function WizardPage(props: { params: Promise<{ id: string }> }) {
       : derived;
 
   return (
-    <div className="max-w-5xl mx-auto space-y-8 py-2">
-      {/* ─ Top bar ─ */}
-      <div className="flex items-center justify-between">
-        <Link
-          href="/create"
-          className="inline-flex items-center gap-1.5 text-sm text-neutral-500 hover:text-white transition-colors"
-        >
-          <ChevronLeft size={14} />
-          一覧
-        </Link>
-        <div className="text-right">
-          <h1 className="text-lg font-semibold text-white">
+    <div className="max-w-5xl space-y-5">
+      {/* ─ Top bar (tool-style) ─ */}
+      <div className="flex items-center justify-between pb-2 border-b border-white/[0.06]">
+        <div className="flex items-center gap-2.5">
+          <Link
+            href="/create"
+            className="inline-flex items-center gap-1 text-xs text-neutral-500 hover:text-white transition-colors"
+          >
+            <ChevronLeft size={12} />
+            一覧
+          </Link>
+          <span className="text-neutral-700">/</span>
+          <h1 className="text-sm font-semibold text-white">
             {storyboard.title}
           </h1>
           {storyboard.theme && (
-            <p className="text-xs text-neutral-500 capitalize">
-              {storyboard.theme} · シーン {storyboard.scenes.length}件
-            </p>
+            <span className="text-[11px] text-neutral-500 capitalize">
+              · {storyboard.theme} · シーン {storyboard.scenes.length}件
+            </span>
           )}
         </div>
       </div>

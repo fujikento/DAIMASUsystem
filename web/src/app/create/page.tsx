@@ -4,44 +4,39 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  Sparkles,
   ChevronRight,
-  Clock,
   Plus,
   Loader2,
-  AlertCircle,
-  CheckCircle2,
-  Image as ImageIcon,
-  Video,
+  AlertTriangle,
   Trash2,
+  Settings,
 } from "lucide-react";
 import {
   fetchStoryboards,
   deleteStoryboard,
+  fetchTables,
   type StoryboardListItem,
+  type ProjectionTable,
 } from "@/lib/api";
 
 const STATUS_META: Record<
   string,
-  { label: string; color: string; nextLabel: string; icon: React.ReactNode }
+  { label: string; color: string; nextLabel: string }
 > = {
   draft: {
     label: "下書き",
     color: "text-neutral-400 bg-neutral-500/15 border-neutral-500/30",
     nextLabel: "台本を編集",
-    icon: <Sparkles size={12} />,
   },
   images_ready: {
-    label: "画像できた",
+    label: "画像完了",
     color: "text-blue-300 bg-blue-500/15 border-blue-500/30",
-    nextLabel: "動画にする",
-    icon: <ImageIcon size={12} />,
+    nextLabel: "動画へ",
   },
   video_ready: {
-    label: "動画完成",
+    label: "動画完了",
     color: "text-emerald-300 bg-emerald-500/15 border-emerald-500/30",
-    nextLabel: "投影する",
-    icon: <Video size={12} />,
+    nextLabel: "投影",
   },
 };
 
@@ -62,18 +57,23 @@ function relativeJa(iso: string): string {
 export default function CreateLandingPage() {
   const router = useRouter();
   const [list, setList] = useState<StoryboardListItem[] | null>(null);
+  const [tables, setTables] = useState<ProjectionTable[]>([]);
   const [error, setError] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
   async function load() {
     setError(false);
     try {
-      const data = await fetchStoryboards();
+      const [data, tbls] = await Promise.all([
+        fetchStoryboards(),
+        fetchTables().catch(() => [] as ProjectionTable[]),
+      ]);
       data.sort(
         (a, b) =>
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
       setList(data);
+      setTables(tbls);
     } catch {
       setError(true);
       setList([]);
@@ -97,68 +97,69 @@ export default function CreateLandingPage() {
     }
   }
 
+  function tableNameFor(id: number | null | undefined): string {
+    if (!id) return "席未指定";
+    return tables.find((t) => t.id === id)?.name ?? `席 #${id}`;
+  }
+
+  const noTables = tables.length === 0;
+
   return (
-    <div className="max-w-3xl mx-auto space-y-10 py-4">
+    <div className="max-w-4xl space-y-6">
       {/* ─ Header ─ */}
-      <div className="text-center space-y-3">
-        <p className="text-xs font-semibold tracking-[0.25em] uppercase text-blue-400/80">
-          Step 1 of 4
-        </p>
-        <h1 className="text-4xl font-bold text-white tracking-tight">
-          何を作りますか?
-        </h1>
-        <p className="text-neutral-400 text-base">
-          新しく作るか、前回の続きから始められます
-        </p>
+      <div className="flex items-end justify-between gap-3 pb-3 border-b border-white/[0.06]">
+        <div>
+          <h1 className="text-xl font-semibold text-white">台本を作る</h1>
+          <p className="text-xs text-neutral-500 mt-1">
+            新規作成、または既存の下書きから再開できます。
+          </p>
+        </div>
+        <button
+          onClick={() => router.push("/create/new")}
+          disabled={noTables}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          title={noTables ? "席を先に登録してください" : ""}
+        >
+          <Plus size={14} />
+          新規台本
+        </button>
       </div>
 
-      {/* ─ New storyboard CTA (primary) ─ */}
-      <button
-        onClick={() => router.push("/create/new")}
-        className="group w-full text-left rounded-3xl p-8 bg-gradient-to-br from-blue-600 via-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 transition-all shadow-2xl shadow-blue-900/40 hover:shadow-blue-800/60 hover:scale-[1.01] active:scale-[0.99]"
-      >
-        <div className="flex items-center gap-5">
-          <div className="w-16 h-16 rounded-2xl bg-white/15 border border-white/20 flex items-center justify-center shrink-0 group-hover:bg-white/25 transition-colors">
-            <Plus size={28} className="text-white" strokeWidth={2.5} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <h2 className="text-2xl font-bold text-white mb-1">
-              新しい台本をつくる
-            </h2>
-            <p className="text-white/80 text-sm leading-relaxed">
-              テーマを選んで、AIに台本を書かせて、画像と動画を作ります。最短5分。
+      {/* ─ No tables warning ─ */}
+      {noTables && (
+        <div className="rounded-md bg-amber-500/10 border border-amber-500/30 p-3 text-sm flex items-start gap-2.5">
+          <AlertTriangle size={14} className="text-amber-300 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-amber-200 font-medium">
+              席 (テーブル) が登録されていません
+            </p>
+            <p className="text-amber-300/70 text-xs mt-0.5">
+              動画は席のサイズに合わせて作るため、先に席を登録してください。
             </p>
           </div>
-          <ChevronRight
-            size={28}
-            className="text-white/80 shrink-0 group-hover:translate-x-1 transition-transform"
-          />
+          <Link
+            href="/tables"
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-100 text-xs font-medium transition-colors shrink-0"
+          >
+            <Settings size={11} />
+            席を登録
+          </Link>
         </div>
-      </button>
+      )}
 
-      {/* ─ Resume section ─ */}
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-neutral-300 tracking-wide">
-            続きから
-          </h3>
-          {list && list.length > 0 && (
-            <span className="text-xs text-neutral-600">
-              {list.length}件の作品
-            </span>
-          )}
-        </div>
-
+      {/* ─ List ─ */}
+      <section>
+        <h2 className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-2">
+          既存の台本 {list && list.length > 0 ? `(${list.length}件)` : ""}
+        </h2>
         {list === null ? (
-          <div className="rounded-2xl bg-[#0e1d32] border border-blue-400/10 h-32 flex items-center justify-center">
-            <Loader2 size={20} className="animate-spin text-neutral-600" />
+          <div className="rounded-md bg-[#11141a] border border-white/10 h-24 flex items-center justify-center">
+            <Loader2 size={16} className="animate-spin text-neutral-500" />
           </div>
         ) : error ? (
-          <div className="rounded-2xl bg-[#0e1d32] border border-red-500/15 p-6 text-center space-y-2">
-            <AlertCircle size={20} className="text-red-400/60 mx-auto" />
-            <p className="text-sm text-neutral-400">
-              読み込みに失敗しました
-            </p>
+          <div className="rounded-md bg-[#11141a] border border-red-500/15 p-4 text-center space-y-2">
+            <AlertTriangle size={16} className="text-red-400/60 mx-auto" />
+            <p className="text-sm text-neutral-400">読み込み失敗</p>
             <button
               onClick={load}
               className="text-xs text-blue-400 hover:text-blue-300"
@@ -167,95 +168,96 @@ export default function CreateLandingPage() {
             </button>
           </div>
         ) : list.length === 0 ? (
-          <div className="rounded-2xl bg-[#0e1d32] border border-dashed border-neutral-700 p-8 text-center">
-            <Sparkles size={24} className="text-neutral-700 mx-auto mb-2" />
+          <div className="rounded-md bg-[#11141a] border border-dashed border-white/10 p-8 text-center">
             <p className="text-sm text-neutral-500">
-              まだ作品はありません。上のボタンから始めましょう。
+              まだ台本はありません。上の「新規台本」から作成します。
             </p>
           </div>
         ) : (
-          <ul className="space-y-2.5">
-            {list.map((sb) => {
-              const meta = STATUS_META[sb.status] ?? STATUS_META.draft;
-              const isDeleting = deletingId === sb.id;
-              return (
-                <li
-                  key={sb.id}
-                  className="group rounded-2xl bg-[#0e1d32] border border-blue-400/10 hover:border-blue-400/30 transition-colors overflow-hidden"
-                >
-                  <div className="flex items-stretch">
-                    <Link
-                      href={`/create/${sb.id}`}
-                      className="flex-1 flex items-center gap-4 p-4 hover:bg-blue-400/[0.04] transition-colors min-w-0"
+          <div className="rounded-md bg-[#11141a] border border-white/10 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-white/[0.02] text-[11px] uppercase tracking-wider text-neutral-500">
+                <tr>
+                  <th className="text-left px-4 py-2 font-semibold">タイトル</th>
+                  <th className="text-left px-4 py-2 font-semibold">席</th>
+                  <th className="text-left px-4 py-2 font-semibold">テーマ</th>
+                  <th className="text-left px-4 py-2 font-semibold">状態</th>
+                  <th className="text-left px-4 py-2 font-semibold">作成</th>
+                  <th className="text-right px-4 py-2 font-semibold w-32">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.04]">
+                {list.map((sb) => {
+                  const meta = STATUS_META[sb.status] ?? STATUS_META.draft;
+                  const isDeleting = deletingId === sb.id;
+                  return (
+                    <tr
+                      key={sb.id}
+                      className="hover:bg-white/[0.02] transition-colors"
                     >
-                      <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-[#0a1628] to-[#0d1f38] border border-white/[0.06] flex items-center justify-center shrink-0">
-                        {sb.status === "video_ready" ? (
-                          <Video size={20} className="text-emerald-400/70" />
-                        ) : sb.status === "images_ready" ? (
-                          <ImageIcon size={20} className="text-blue-400/70" />
-                        ) : (
-                          <Sparkles size={20} className="text-neutral-600" />
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h4 className="text-white text-base font-semibold truncate">
-                            {sb.title || "(無題)"}
-                          </h4>
-                          <span
-                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold whitespace-nowrap border ${meta.color}`}
+                      <td className="px-4 py-2.5">
+                        <Link
+                          href={`/create/${sb.id}`}
+                          className="text-white font-medium hover:text-blue-300 transition-colors"
+                        >
+                          {sb.title || "(無題)"}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-2.5 text-neutral-400 text-xs">
+                        {tableNameFor(sb.projection_config_id)}
+                      </td>
+                      <td className="px-4 py-2.5 text-neutral-400 capitalize text-xs">
+                        {sb.theme ?? "—"}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${meta.color}`}
+                        >
+                          {meta.label}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-neutral-500 text-xs tabular-nums">
+                        {relativeJa(sb.created_at)}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center justify-end gap-1">
+                          <Link
+                            href={`/create/${sb.id}`}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs text-blue-400 hover:text-white hover:bg-blue-500/20 transition-colors"
                           >
-                            {meta.icon}
-                            {meta.label}
-                          </span>
+                            {meta.nextLabel}
+                            <ChevronRight size={11} />
+                          </Link>
+                          <button
+                            onClick={() => handleDelete(sb.id)}
+                            disabled={isDeleting}
+                            className="w-7 h-7 rounded hover:bg-red-500/15 text-neutral-500 hover:text-red-300 flex items-center justify-center transition-colors disabled:opacity-50"
+                            title="削除"
+                          >
+                            {isDeleting ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <Trash2 size={12} />
+                            )}
+                          </button>
                         </div>
-                        <div className="flex items-center gap-2 text-xs text-neutral-500 mt-1">
-                          <Clock size={11} />
-                          <span>{relativeJa(sb.created_at)}</span>
-                          {sb.theme && (
-                            <>
-                              <span className="text-neutral-700">·</span>
-                              <span className="capitalize">{sb.theme}</span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      <div className="hidden sm:flex items-center gap-1.5 text-xs font-medium text-blue-400 shrink-0">
-                        <span>{meta.nextLabel}</span>
-                        <ChevronRight
-                          size={14}
-                          className="group-hover:translate-x-0.5 transition-transform"
-                        />
-                      </div>
-                    </Link>
-                    <button
-                      onClick={() => handleDelete(sb.id)}
-                      disabled={isDeleting}
-                      className="px-4 border-l border-white/[0.04] text-neutral-700 hover:text-red-400 hover:bg-red-500/5 transition-colors disabled:opacity-50"
-                      title="削除"
-                    >
-                      {isDeleting ? (
-                        <Loader2 size={16} className="animate-spin" />
-                      ) : (
-                        <Trash2 size={16} />
-                      )}
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
-      {/* ─ Power-user escape hatch ─ */}
-      <div className="text-center pt-4">
+      {/* ─ Advanced link ─ */}
+      <div className="text-right pt-2">
         <Link
           href="/generation"
-          className="inline-flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-300 transition-colors"
+          className="text-[11px] text-neutral-600 hover:text-neutral-400 transition-colors"
         >
-          <CheckCircle2 size={12} />
-          詳細編集モードを開く(上級者向け)
+          詳細編集モード (上級者向け) →
         </Link>
       </div>
     </div>

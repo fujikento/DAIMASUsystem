@@ -13,11 +13,12 @@ import {
   BarChart2,
   KeyRound,
   Smartphone,
+  Table,
   Menu,
   X,
 } from "lucide-react";
 
-// ── Primary nav (always visible — 3 items) ──────────────────────
+// ── Primary nav (always visible — 4 items) ──────────────────────
 const PRIMARY = [
   {
     href: "/",
@@ -25,6 +26,13 @@ const PRIMARY = [
     icon: LayoutDashboard,
     sub: "全体の状況",
     matchExact: true,
+  },
+  {
+    href: "/tables",
+    label: "席 (テーブル)",
+    icon: Table,
+    sub: "投影サイズ・構成",
+    matchExact: false,
   },
   {
     href: "/create",

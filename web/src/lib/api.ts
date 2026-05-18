@@ -379,6 +379,75 @@ export interface TableSpec {
   updated_at: string | null;
 }
 
+// ─── Multi-row Table (席) management ──────────────────────────────────────
+
+export interface ProjectionTable {
+  id: number;
+  name: string;
+  is_default: boolean;
+  pj_width: number;
+  pj_height: number;
+  pj_count: number;
+  blend_overlap: number;
+  zone_count: number;
+  table_width_mm: number;
+  table_height_mm: number;
+  note: string | null;
+  full_width: number;
+  full_height: number;
+  zone_width: number;
+  zone_height: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export async function fetchTables(): Promise<ProjectionTable[]> {
+  return apiFetch("/api/generation/table-specs");
+}
+
+export async function createTable(data: {
+  name: string;
+  pj_width?: number;
+  pj_height?: number;
+  pj_count?: number;
+  blend_overlap?: number;
+  zone_count?: number;
+  table_width_mm?: number;
+  table_height_mm?: number;
+  note?: string;
+  is_default?: boolean;
+}): Promise<ProjectionTable> {
+  return apiFetch("/api/generation/table-specs", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateTable(
+  id: number,
+  data: Partial<{
+    name: string;
+    pj_width: number;
+    pj_height: number;
+    pj_count: number;
+    blend_overlap: number;
+    zone_count: number;
+    table_width_mm: number;
+    table_height_mm: number;
+    note: string | null;
+    is_default: boolean;
+  }>
+): Promise<ProjectionTable> {
+  return apiFetch(`/api/generation/table-specs/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteTable(id: number): Promise<void> {
+  await apiFetch(`/api/generation/table-specs/${id}`, { method: "DELETE" });
+}
+
 export async function fetchTableSpec(): Promise<TableSpec> {
   return apiFetch("/api/generation/table-spec");
 }
@@ -620,6 +689,7 @@ export interface StoryboardData {
   mode: string;
   provider: string;
   status: string;
+  projection_config_id: number | null;
   created_at: string;
   updated_at: string | null;
   scenes: StoryboardScene[];
@@ -633,6 +703,7 @@ export interface StoryboardListItem {
   mode: string;
   provider: string;
   status: string;
+  projection_config_id: number | null;
   created_at: string;
 }
 
@@ -642,6 +713,7 @@ export async function createStoryboard(data: {
   theme?: string;
   provider?: string;
   auto_generate_scenes?: boolean;
+  projection_config_id?: number;
 }): Promise<StoryboardData> {
   return apiFetch("/api/storyboards", {
     method: "POST",

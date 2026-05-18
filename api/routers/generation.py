@@ -22,7 +22,12 @@ from sqlalchemy.orm import Session
 
 from api.middleware.ratelimit import generation_rate_limit
 from api.models.database import get_db
-from api.models.schemas import CourseDish, ProjectionConfig, ProjectionConfigUpdate
+from api.models.schemas import (
+    CourseDish,
+    ProjectionConfig,
+    ProjectionConfigCreate,
+    ProjectionConfigUpdate,
+)
 from api.services.cost_tracker import (
     estimate_usd,
     map_video_provider,
@@ -157,10 +162,22 @@ def _validate_seed_image_path(path: str) -> None:
         )
 
 
-def _layout_from_db(db: Session) -> LayoutSpec:
-    """DB の ProjectionConfig を LayoutSpec に変換する。未設定ならデフォルト。"""
-    config = db.query(ProjectionConfig).first()
-    if not config:
+def _layout_from_db(db: Session, projection_config_id: Optional[int] = None) -> LayoutSpec:
+    """DB の ProjectionConfig を LayoutSpec に変換する。
+    台本に席が紐付いていればそれを使う、なければデフォルト席を使う、それも無ければハードコードデフォルト。
+    """
+    config = None
+    if projection_config_id is not None:
+        config = db.query(ProjectionConfig).filter(
+            ProjectionConfig.id == projection_config_id
+        ).first()
+    if config is None:
+        config = db.query(ProjectionConfig).filter(
+            ProjectionConfig.is_default == True  # noqa: E712
+        ).first()
+    if config is None:
+        config = db.query(ProjectionConfig).order_by(ProjectionConfig.id).first()
+    if config is None:
         return LayoutSpec()
     return LayoutSpec(
         pj_width=config.pj_width,
@@ -314,13 +331,42 @@ def list_themes(db: Session = Depends(get_db)):
     }
 
 
-@router.get("/table-spec")
-def get_table_spec(db: Session = Depends(get_db)):
-    """テーブルスペック設定を取得"""
-    config = db.query(ProjectionConfig).first()
+def _config_to_dict(config: ProjectionConfig) -> dict:
+    """ProjectionConfig (席) を computed フィールド込みで dict 化する。"""
+    full_width = (config.pj_width * config.pj_count) - (
+        config.blend_overlap * (config.pj_count - 1)
+    )
+    full_height = config.pj_height
+    zone_width = full_width // max(config.zone_count, 1)
+    zone_height = full_height
+    return {
+        "id": config.id,
+        "name": config.name or "メインテーブル",
+        "is_default": bool(config.is_default),
+        "pj_width": config.pj_width,
+        "pj_height": config.pj_height,
+        "pj_count": config.pj_count,
+        "blend_overlap": config.blend_overlap,
+        "zone_count": config.zone_count,
+        "table_width_mm": config.table_width_mm if config.table_width_mm is not None else 8120,
+        "table_height_mm": config.table_height_mm if config.table_height_mm is not None else 600,
+        "note": config.note,
+        "full_width": full_width,
+        "full_height": full_height,
+        "zone_width": zone_width,
+        "zone_height": zone_height,
+        "created_at": config.created_at,
+        "updated_at": config.updated_at,
+    }
+
+
+def _ensure_default_config(db: Session) -> ProjectionConfig:
+    """1 行も無ければデフォルトを作る。default 行は最古の 1 行を採用。"""
+    config = db.query(ProjectionConfig).order_by(ProjectionConfig.id).first()
     if not config:
-        # デフォルト値でレコード作成
         config = ProjectionConfig(
+            name="メインテーブル",
+            is_default=True,
             pj_width=PJ_WIDTH,
             pj_height=PJ_HEIGHT,
             pj_count=PJ_COUNT,
@@ -330,72 +376,109 @@ def get_table_spec(db: Session = Depends(get_db)):
         db.add(config)
         db.commit()
         db.refresh(config)
+    return config
 
-    full_width = (config.pj_width * config.pj_count) - (config.blend_overlap * (config.pj_count - 1))
-    full_height = config.pj_height
-    zone_width = full_width // config.zone_count
-    zone_height = full_height
 
-    return {
-        "id": config.id,
-        "pj_width": config.pj_width,
-        "pj_height": config.pj_height,
-        "pj_count": config.pj_count,
-        "blend_overlap": config.blend_overlap,
-        "zone_count": config.zone_count,
-        "table_width_mm": config.table_width_mm if config.table_width_mm is not None else 8120,
-        "table_height_mm": config.table_height_mm if config.table_height_mm is not None else 600,
-        "full_width": full_width,
-        "full_height": full_height,
-        "zone_width": zone_width,
-        "zone_height": zone_height,
-        "updated_at": config.updated_at,
-    }
+@router.get("/table-spec")
+def get_table_spec(db: Session = Depends(get_db)):
+    """[後方互換] デフォルト席を返す。新規 UI は /table-specs を使う。"""
+    config = _ensure_default_config(db)
+    return _config_to_dict(config)
 
 
 @router.put("/table-spec")
 def update_table_spec(req: ProjectionConfigUpdate, db: Session = Depends(get_db)):
-    """テーブルスペック設定を更新"""
-    config = db.query(ProjectionConfig).first()
-    if not config:
-        config = ProjectionConfig(
-            pj_width=PJ_WIDTH,
-            pj_height=PJ_HEIGHT,
-            pj_count=PJ_COUNT,
-            blend_overlap=BLEND_OVERLAP,
-            zone_count=ZONE_COUNT,
-        )
-        db.add(config)
-        db.commit()
-        db.refresh(config)
-
+    """[後方互換] デフォルト席を更新する。新規 UI は /table-specs/{id} を使う。"""
+    config = _ensure_default_config(db)
     update_data = req.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(config, key, value)
-
     db.commit()
     db.refresh(config)
+    return _config_to_dict(config)
 
-    full_width = (config.pj_width * config.pj_count) - (config.blend_overlap * (config.pj_count - 1))
-    full_height = config.pj_height
-    zone_width = full_width // config.zone_count
-    zone_height = full_height
 
-    return {
-        "id": config.id,
-        "pj_width": config.pj_width,
-        "pj_height": config.pj_height,
-        "pj_count": config.pj_count,
-        "blend_overlap": config.blend_overlap,
-        "zone_count": config.zone_count,
-        "table_width_mm": config.table_width_mm if config.table_width_mm is not None else 8120,
-        "table_height_mm": config.table_height_mm if config.table_height_mm is not None else 600,
-        "full_width": full_width,
-        "full_height": full_height,
-        "zone_width": zone_width,
-        "zone_height": zone_height,
-        "updated_at": config.updated_at,
-    }
+# ─── Multi-row Table (席) management ──────────────────────────────
+
+
+@router.get("/table-specs")
+def list_table_specs(db: Session = Depends(get_db)) -> list[dict]:
+    """登録済み席 (テーブル) の一覧。"""
+    _ensure_default_config(db)  # 0 件なら 1 件作って空配列を返さない
+    rows = db.query(ProjectionConfig).order_by(
+        ProjectionConfig.is_default.desc(), ProjectionConfig.id
+    ).all()
+    return [_config_to_dict(r) for r in rows]
+
+
+@router.post("/table-specs", status_code=201)
+def create_table_spec(req: ProjectionConfigCreate, db: Session = Depends(get_db)) -> dict:
+    """新しい席 (テーブル) を登録する。"""
+    if not req.name or not req.name.strip():
+        raise HTTPException(status_code=400, detail="name は必須です")
+
+    # is_default=true 指定なら、既存のデフォルトを解除
+    if req.is_default:
+        db.query(ProjectionConfig).filter(ProjectionConfig.is_default == True).update(  # noqa: E712
+            {"is_default": False}
+        )
+
+    config = ProjectionConfig(**req.model_dump())
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return _config_to_dict(config)
+
+
+@router.patch("/table-specs/{table_id}")
+def update_table_spec_by_id(
+    table_id: int, req: ProjectionConfigUpdate, db: Session = Depends(get_db)
+) -> dict:
+    """既存席を更新する。is_default=true 指定なら他の default は解除される。"""
+    config = db.query(ProjectionConfig).filter(ProjectionConfig.id == table_id).first()
+    if not config:
+        raise HTTPException(status_code=404, detail=f"table {table_id} not found")
+
+    update_data = req.model_dump(exclude_unset=True)
+
+    if update_data.get("is_default") is True:
+        # 他の default を解除
+        db.query(ProjectionConfig).filter(
+            ProjectionConfig.is_default == True,  # noqa: E712
+            ProjectionConfig.id != table_id,
+        ).update({"is_default": False})
+
+    for key, value in update_data.items():
+        setattr(config, key, value)
+    db.commit()
+    db.refresh(config)
+    return _config_to_dict(config)
+
+
+@router.delete("/table-specs/{table_id}", status_code=204)
+def delete_table_spec(table_id: int, db: Session = Depends(get_db)):
+    """席を削除する。最後の 1 行は削除拒否(投影設定が消えてしまうため)。"""
+    config = db.query(ProjectionConfig).filter(ProjectionConfig.id == table_id).first()
+    if not config:
+        raise HTTPException(status_code=404, detail=f"table {table_id} not found")
+
+    total = db.query(ProjectionConfig).count()
+    if total <= 1:
+        raise HTTPException(
+            status_code=400,
+            detail="最後の席は削除できません(投影設定として最低 1 件必要)。",
+        )
+
+    was_default = bool(config.is_default)
+    db.delete(config)
+    db.commit()
+
+    # 削除した行が default だった場合、残った最古の行を新デフォルトに昇格
+    if was_default:
+        next_default = db.query(ProjectionConfig).order_by(ProjectionConfig.id).first()
+        if next_default:
+            next_default.is_default = True
+            db.commit()
 
 
 @router.post("/prompt-preview")
