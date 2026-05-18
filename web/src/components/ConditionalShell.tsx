@@ -23,8 +23,8 @@ export default function ConditionalShell({ children }: { children: ReactNode }) 
   return (
     <div className="flex min-h-screen">
       <Sidebar />
-      <main className="flex-1 pl-[260px]">
-        <div className="max-w-[1400px] mx-auto px-8 py-8">
+      <main className="flex-1 md:pl-[240px] pt-14 md:pt-0">
+        <div className="max-w-[1400px] mx-auto px-4 md:px-8 py-6 md:py-8">
           {children}
         </div>
       </main>

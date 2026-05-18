@@ -2,225 +2,246 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useState, useEffect } from "react";
 import {
   LayoutDashboard,
-  Film,
   Projector,
   Wand2,
+  ChevronDown,
+  Film,
   Palette,
   BarChart2,
   KeyRound,
+  Smartphone,
+  Menu,
+  X,
 } from "lucide-react";
 
-// ── メインナビゲーション ─────────────────────────────────────
-
-const MAIN_NAV = [
-  {
-    href: "/generation",
-    label: "台本・映像生成",
-    icon: Wand2,
-    description: "AI映像コンテンツ作成",
-    primary: true,
-  },
+// ── Primary nav (always visible — 3 items) ──────────────────────
+const PRIMARY = [
   {
     href: "/",
-    label: "ダッシュボード",
+    label: "ホーム",
     icon: LayoutDashboard,
-    description: "本日の運営状況",
-    primary: false,
+    sub: "全体の状況",
+    matchExact: true,
+  },
+  {
+    href: "/create",
+    label: "つくる",
+    icon: Wand2,
+    sub: "台本 → 画像 → 動画",
+    matchExact: false,
   },
   {
     href: "/control",
-    label: "投影制御",
+    label: "ながす",
     icon: Projector,
-    description: "プロジェクター操作",
-    primary: false,
-  },
-  {
-    href: "/content",
-    label: "コンテンツ管理",
-    icon: Film,
-    description: "映像ライブラリ",
-    primary: false,
-  },
-  {
-    href: "/analytics",
-    label: "分析",
-    icon: BarChart2,
-    description: "生成統計・コスト",
-    primary: false,
+    sub: "投影制御",
+    matchExact: false,
   },
 ];
 
-// ── 設定グループ ─────────────────────────────────────────────
-
-const SETTINGS_NAV = [
+// ── Secondary nav (collapsible) ────────────────────────────────
+const SECONDARY = [
+  {
+    href: "/content",
+    label: "コンテンツライブラリ",
+    icon: Film,
+  },
+  {
+    href: "/operator",
+    label: "オペレーター画面",
+    icon: Smartphone,
+  },
+  {
+    href: "/analytics",
+    label: "分析・コスト",
+    icon: BarChart2,
+  },
   {
     href: "/settings",
-    label: "曜日テーマ設定",
+    label: "曜日テーマ",
     icon: Palette,
-    description: "テーマカラー・アイコン",
   },
   {
     href: "/app-settings",
     label: "APIキー設定",
     icon: KeyRound,
-    description: "Runway・Kling など",
   },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
+
+  const isActive = (href: string, matchExact: boolean) => {
+    if (matchExact) return pathname === href;
+    return pathname === href || pathname.startsWith(`${href}/`);
+  };
 
   return (
-    <aside className="fixed left-0 top-0 h-screen w-[260px] bg-[#0a1222] border-r border-blue-400/[0.08] flex flex-col z-50">
-      {/* ロゴ */}
-      <div className="px-6 py-5 border-b border-blue-400/[0.06]">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center flex-shrink-0">
-            <Projector size={16} className="text-white" />
+    <>
+      {/* ─ Mobile top bar (hamburger) ─ */}
+      <div className="md:hidden fixed top-0 left-0 right-0 h-14 bg-[#0a1222]/95 backdrop-blur border-b border-blue-400/10 flex items-center justify-between px-4 z-40">
+        <Link href="/" className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center">
+            <Projector size={14} className="text-white" />
+          </div>
+          <span className="text-sm font-bold tracking-wide text-white">
+            IMMERSIVE
+          </span>
+        </Link>
+        <button
+          onClick={() => setMobileOpen(true)}
+          className="w-9 h-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white transition-colors"
+          aria-label="メニュー"
+        >
+          <Menu size={18} />
+        </button>
+      </div>
+
+      {/* ─ Mobile overlay ─ */}
+      {mobileOpen && (
+        <div
+          className="md:hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+      {/* ─ Sidebar (desktop fixed; mobile slide-in) ─ */}
+      <aside
+        className={`fixed left-0 top-0 h-screen w-[240px] bg-[#0a1222] border-r border-blue-400/[0.08] flex flex-col z-50 transition-transform md:translate-x-0 ${
+          mobileOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        {/* Mobile close button */}
+        <button
+          onClick={() => setMobileOpen(false)}
+          className="md:hidden absolute top-3 right-3 w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white"
+          aria-label="閉じる"
+        >
+          <X size={16} />
+        </button>
+      {/* ─ Logo ─ */}
+      <div className="px-5 py-5 border-b border-blue-400/[0.06]">
+        <Link href="/" className="flex items-center gap-2.5 group">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+            <Projector size={17} className="text-white" />
           </div>
           <div>
             <h1 className="text-sm font-bold tracking-wide text-white">
-              IMMERSIVE DINING
+              IMMERSIVE
             </h1>
             <p className="text-[10px] text-slate-500 tracking-wider">
-              映像投影システム
+              DINING SYSTEM
             </p>
           </div>
-        </div>
+        </Link>
       </div>
 
-      {/* メインナビゲーション */}
-      <nav className="flex-1 overflow-y-auto px-3 py-3">
-        {/* 生成ワークフロー（最重要） */}
-        {MAIN_NAV.filter((item) => item.primary).map((item) => {
-          const isActive = pathname.startsWith(item.href);
+      {/* ─ Primary navigation (3 big items) ─ */}
+      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
+        {PRIMARY.map((item) => {
+          const active = isActive(item.href, item.matchExact);
           const Icon = item.icon;
           return (
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 px-3 py-3 rounded-xl text-[13px] font-semibold transition-all group mb-2 ${
-                isActive
-                  ? "bg-blue-600/[0.15] text-blue-300 border border-blue-400/[0.20]"
-                  : "text-slate-300 hover:text-white hover:bg-blue-400/[0.06] border border-transparent"
+              className={`group flex items-center gap-3 px-3 py-3 rounded-xl transition-all border ${
+                active
+                  ? "bg-blue-600/15 border-blue-400/30 text-white"
+                  : "border-transparent text-slate-300 hover:text-white hover:bg-blue-400/[0.05]"
               }`}
             >
               <div
-                className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 transition-all ${
-                  isActive
-                    ? "bg-blue-500/20"
-                    : "bg-blue-400/[0.06] group-hover:bg-blue-400/[0.10]"
+                className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-all ${
+                  active
+                    ? "bg-blue-500/25"
+                    : "bg-blue-400/[0.05] group-hover:bg-blue-400/[0.10]"
                 }`}
               >
                 <Icon
-                  size={15}
-                  strokeWidth={isActive ? 2.3 : 1.9}
-                  className={isActive ? "text-blue-400" : "text-slate-400"}
+                  size={17}
+                  strokeWidth={active ? 2.3 : 1.9}
+                  className={active ? "text-blue-300" : "text-slate-400"}
                 />
               </div>
-              <div className="min-w-0">
-                <div className="truncate">{item.label}</div>
-                {item.description && (
-                  <div className="text-[10px] text-slate-500 truncate font-normal group-hover:text-slate-400 transition-colors mt-0.5">
-                    {item.description}
-                  </div>
-                )}
+              <div className="min-w-0 flex-1">
+                <div
+                  className={`text-sm font-semibold truncate ${
+                    active ? "text-white" : "text-slate-200"
+                  }`}
+                >
+                  {item.label}
+                </div>
+                <div className="text-[10px] text-slate-500 truncate mt-0.5">
+                  {item.sub}
+                </div>
               </div>
-              {isActive && (
-                <div className="ml-auto w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0" />
+              {active && (
+                <div className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0" />
               )}
             </Link>
           );
         })}
 
-        {/* セパレーター */}
-        <div className="my-2 border-t border-blue-400/[0.05]" />
+        {/* ─ Secondary toggle ─ */}
+        <div className="pt-4">
+          <button
+            onClick={() => setShowAdvanced((v) => !v)}
+            className="w-full flex items-center justify-between px-3 py-2 text-[10px] font-medium text-slate-600 hover:text-slate-400 uppercase tracking-widest transition-colors"
+          >
+            <span>その他</span>
+            <ChevronDown
+              size={12}
+              className={`transition-transform ${
+                showAdvanced ? "rotate-180" : ""
+              }`}
+            />
+          </button>
 
-        {/* その他のナビゲーション */}
-        <p className="text-[10px] font-medium text-slate-600 uppercase tracking-widest px-3 mb-2 mt-3">
-          運営管理
-        </p>
-        <div className="space-y-0.5">
-          {MAIN_NAV.filter((item) => !item.primary).map((item) => {
-            const isActive =
-              item.href === "/"
-                ? pathname === "/"
-                : pathname.startsWith(item.href);
-            const Icon = item.icon;
-
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all group ${
-                  isActive
-                    ? "bg-blue-500/10 text-blue-400"
-                    : "text-slate-400 hover:text-white hover:bg-blue-400/[0.04]"
-                }`}
-              >
-                <Icon
-                  size={17}
-                  strokeWidth={isActive ? 2.2 : 1.8}
-                  className="flex-shrink-0"
-                />
-                <div className="min-w-0">
-                  <div className="truncate">{item.label}</div>
-                  {item.description && (
-                    <div className="text-[10px] text-slate-600 truncate group-hover:text-slate-500 transition-colors">
-                      {item.description}
-                    </div>
-                  )}
-                </div>
-              </Link>
-            );
-          })}
+          {showAdvanced && (
+            <div className="space-y-0.5 mt-1">
+              {SECONDARY.map((item) => {
+                const active = isActive(item.href, false);
+                const Icon = item.icon;
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className={`flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+                      active
+                        ? "bg-blue-500/10 text-blue-300"
+                        : "text-slate-500 hover:text-white hover:bg-blue-400/[0.04]"
+                    }`}
+                  >
+                    <Icon
+                      size={14}
+                      strokeWidth={active ? 2.2 : 1.8}
+                      className="shrink-0"
+                    />
+                    <span className="truncate">{item.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
         </div>
       </nav>
 
-      {/* 設定グループ (フッター上) */}
-      <div className="px-3 pb-2 border-t border-blue-400/[0.06] pt-3">
-        <p className="text-[10px] font-medium text-slate-600 uppercase tracking-widest px-3 mb-2">
-          設定
-        </p>
-        <div className="space-y-0.5">
-          {SETTINGS_NAV.map((item) => {
-            const isActive = pathname.startsWith(item.href);
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all group ${
-                  isActive
-                    ? "bg-blue-500/10 text-blue-400"
-                    : "text-slate-400 hover:text-white hover:bg-blue-400/[0.04]"
-                }`}
-              >
-                <Icon
-                  size={17}
-                  strokeWidth={isActive ? 2.2 : 1.8}
-                  className="flex-shrink-0"
-                />
-                <div className="min-w-0">
-                  <div className="truncate">{item.label}</div>
-                  {item.description && (
-                    <div className="text-[10px] text-slate-600 truncate group-hover:text-slate-500 transition-colors">
-                      {item.description}
-                    </div>
-                  )}
-                </div>
-              </Link>
-            );
-          })}
-        </div>
+      {/* ─ Footer ─ */}
+      <div className="px-5 py-3 border-t border-blue-400/[0.06]">
+        <p className="text-[10px] text-slate-600">v0.2.0 · 大桝 BAR</p>
       </div>
-
-      {/* フッター */}
-      <div className="px-6 py-3 border-t border-blue-400/[0.06]">
-        <p className="text-[10px] text-slate-600">v0.1.0</p>
-      </div>
-    </aside>
+      </aside>
+    </>
   );
 }
