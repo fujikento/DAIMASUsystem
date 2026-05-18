@@ -1274,6 +1274,9 @@ function ScriptCreationStep({
                 onChange={(e) => onImageProviderChange(e.target.value)}
                 className="pl-2.5 pr-6 py-1.5 text-[11px] bg-[#0e1d32] border border-blue-400/[0.10] rounded-lg text-slate-300 focus:outline-none focus:border-blue-400/30 appearance-none"
               >
+                <option value="">Auto (環境最適)</option>
+                <option value="gpt_image_2">GPT-Image-2 (最高品質・style chain)</option>
+                <option value="fal">fal.ai Flux Pro 1.1 Ultra</option>
                 <option value="gemini">Gemini Flash (標準)</option>
                 <option value="gemini_pro">Gemini Pro (高品質)</option>
                 <option value="imagen">Imagen 4 Fast (最速)</option>
@@ -1378,7 +1381,11 @@ function ImagePreviewStep({
     let consecutiveFailures = 0;
     const MAX_CONSECUTIVE_FAILURES = 5;
 
-    for (let i = 0; i < 180; i++) {
+    // GPT-Image-2 style chain は scene 毎 30-60s × serial で長時間化するため、
+    // 1800 秒 (30 分) まで polling を伸長する。早期完了時は内部 break で抜けるので
+    // 過剰待機にはならない。
+    const MAX_POLL_SECONDS = 1800;
+    for (let i = 0; i < MAX_POLL_SECONDS; i++) {
       if (abortRef.current) { console.log("Poll aborted (pre-sleep)"); break; }
       await new Promise((r) => setTimeout(r, 1000));
       if (abortRef.current) { console.log("Poll aborted (post-sleep)"); break; }
@@ -1526,6 +1533,9 @@ function ImagePreviewStep({
           disabled={scenes.length === 0}
           className="px-3 py-2 bg-[#132040] border border-blue-400/[0.10] rounded-xl text-sm text-white focus:border-blue-500/40 focus:outline-none disabled:opacity-40"
         >
+          <option value="">Auto (環境最適)</option>
+          <option value="gpt_image_2">GPT-Image-2 (最高品質・style chain)</option>
+          <option value="fal">fal.ai Flux Pro 1.1 Ultra</option>
           <option value="gemini">Gemini Flash (標準)</option>
           <option value="gemini_pro">Gemini Pro (高品質)</option>
           <option value="imagen">Imagen 4 Fast (最速)</option>
@@ -2258,7 +2268,8 @@ export default function StoryboardWorkflowTab({
   const [storyboards, setStoryboards] = useState<StoryboardListItem[]>([]);
   const [selectedStoryboard, setSelectedStoryboard] = useState<StoryboardData | null>(null);
   const [sidebarLoading, setSidebarLoading] = useState(true);
-  const [imageProvider, setImageProvider] = useState("imagen");
+  // 空文字 = Auto (backend smart-default: OPENAI_API_KEY 有 → gpt_image_2 / 無 → imagen)
+  const [imageProvider, setImageProvider] = useState("");
 
   // suppress unused warning for themes - may be used in future
   void themes;

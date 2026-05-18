@@ -171,7 +171,8 @@ export default function BatchGenerationTab({ themes }: BatchGenerationTabProps) 
   const [batchStates, setBatchStates] = useState<Record<number, StoryboardBatchState>>({});
 
   // 画像生成設定
-  const [imageProvider, setImageProvider] = useState("gemini");
+  // 空文字 = Auto (backend smart-default)
+  const [imageProvider, setImageProvider] = useState("");
 
   // 一括処理の状態
   const [batchImageGenerating, setBatchImageGenerating] = useState(false);
@@ -766,6 +767,9 @@ function BatchStep1({
               disabled={batchImageGenerating}
               className="w-full px-3 py-2.5 bg-[#132040] border border-blue-400/[0.12] rounded-xl text-sm text-white focus:border-blue-500/40 focus:outline-none disabled:opacity-50"
             >
+              <option value="">Auto (環境最適)</option>
+              <option value="gpt_image_2">GPT-Image-2 (最高品質・style chain)</option>
+              <option value="fal">fal.ai Flux Pro 1.1 Ultra</option>
               <option value="gemini">Gemini Flash (標準)</option>
               <option value="gemini_pro">Gemini Pro (高品質)</option>
               <option value="imagen">Imagen 4 Fast (最速)</option>

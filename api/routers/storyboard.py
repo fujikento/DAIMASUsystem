@@ -983,7 +983,14 @@ async def generate_script(
 # ─── 画像生成 ────────────────────────────────────────────────
 
 class GenerateImagesRequest(PydanticBaseModel):
-    provider: Optional[str] = "imagen"
+    # provider=None (省略) → endpoint 側で key の有無を見て smart fallback:
+    #   OPENAI_API_KEY 有 → gpt_image_2 (最高品質、新 default)
+    #   OPENAI_API_KEY 無 → imagen (既存 default、後方互換性維持)
+    # 明示指定 (provider="gpt_image_2" 等) はそのまま尊重。
+    provider: Optional[str] = None
+    # gpt-image-2 で scene[N+1] を生成する際に scene[N] の出力を style reference として
+    # 渡すか。default True (gpt-image-2 のとき有効)。他の provider では無視される。
+    chain_style: bool = True
 
 
 @router.post("/{storyboard_id}/generate-images")
@@ -1037,14 +1044,40 @@ async def generate_images(
     sb.status = "images_generating"
     db.commit()
 
-    # Image generation always uses the provider from the request body (default: imagen).
-    # The storyboard's `provider` field is for VIDEO generation only and must not be
-    # used here to avoid silently falling back to a placeholder-only provider (runway).
-    image_provider_str = body.provider if body.provider else "imagen"
+    # provider 解決:
+    #   - 明示指定 (body.provider != None): そのまま使う (無効値なら ValueError → imagen にフォールバック)
+    #   - 省略 (body.provider is None): OPENAI_API_KEY の有無で smart default
+    #     * 有 → gpt_image_2 (最高品質)
+    #     * 無 → imagen (既存 default、後方互換性維持)
+    #   The storyboard's `provider` field is for VIDEO generation only and must not be
+    #   used here to avoid silently falling back to a placeholder-only provider (runway).
+    from api.models.schemas import AppSetting as _AppSetting  # local import to avoid cycles
+    if body.provider is None:
+        _has_openai = bool(
+            os.environ.get("OPENAI_API_KEY")
+            or (db.query(_AppSetting)
+                .filter(_AppSetting.key == "OPENAI_API_KEY")
+                .first()
+                and (
+                    db.query(_AppSetting)
+                    .filter(_AppSetting.key == "OPENAI_API_KEY")
+                    .first().value
+                ))
+        )
+        image_provider_str = "gpt_image_2" if _has_openai else "imagen"
+        print(f"[ImageGen] Default provider resolved to '{image_provider_str}' (OPENAI_API_KEY {'present' if _has_openai else 'absent'})")
+    else:
+        image_provider_str = body.provider
     try:
         provider = ImageProvider(image_provider_str)
     except ValueError:
+        # 無効な provider 名なら既存 default の imagen に落とす (gpt_image_2 ではなく)
         provider = ImageProvider.IMAGEN
+        image_provider_str = "imagen"
+
+    # gpt-image-2 + chain_style 有効時のみ scene-to-scene style chain を serial 実行する。
+    # 前シーンの出力が次の reference 入力になるので並列化できないが、style 一貫性を最大化。
+    use_style_chain = body.chain_style and provider == ImageProvider.GPT_IMAGE_2
 
     job_id = f"imgbatch_{storyboard_id}_{len(_active_jobs) + 1}"
     _register_job(job_id, {
@@ -1086,11 +1119,14 @@ async def generate_images(
         # scenes_completed is updated atomically from each parallel task.
         _active_jobs[job_id]["scenes_completed"] = 0
 
-        async def _generate_one(scene_info: dict) -> None:
+        async def _generate_one(scene_info: dict, reference_image_paths: Optional[list[str]] = None) -> None:
             """Generate image for a single scene in its own DB session.
 
             Change 7: DB session is opened AFTER the image generation call so
             that expensive API time does not hold an open connection.
+
+            chain_style (gpt-image-2 のみ): reference_image_paths が渡された場合、
+            client.images.edit() で前シーンの style を引き継いで生成する。
             """
             scene_start = _time.monotonic()
             # scene_description_ja がある場合はそれをメインプロンプトとして使用。
@@ -1127,6 +1163,7 @@ async def generate_images(
                 mood=scene_info.get("mood"),
                 camera_angle=scene_info.get("camera_angle"),
                 style_seed=scene_info.get("style_seed"),
+                reference_image_paths=reference_image_paths,
             )
             # Run image generation BEFORE opening a DB session (Change 7)
             await _image_service.generate(img_job)
@@ -1185,39 +1222,61 @@ async def generate_images(
             _active_jobs[job_id]["estimated_remaining_seconds"] = round(estimated_remaining, 1)
 
         try:
-            # Provider-specific concurrency strategy:
-            # - Imagen: lightweight requests, allow up to 5 concurrent.
-            # - Gemini: allow up to 5 concurrent requests.
-            #   The thread pool (max_workers=8) supports this comfortably.
-            #   Gemini Flash image generation is stateless per request;
-            #   5 concurrent calls stay well within the API quota for most keys.
-            #
-            # Stagger delay strategy (FIXED):
-            # Previously, delay = stagger_interval * scene_index caused O(n) cumulative
-            # wait time. With 10 scenes the last task waited 2.7 s before even starting,
-            # negating the benefit of the semaphore. The fix: stagger only the INITIAL
-            # burst of tasks (first `concurrency` slots) to spread API calls, then let
-            # the semaphore control backpressure naturally as slots free up.
-            is_gemini = image_provider_str in ("gemini", "gemini_pro")
-            concurrency = min(5, len(scene_data)) if is_gemini else min(5, len(scene_data))
-            sem = _asyncio.Semaphore(concurrency)
-            # Per-slot stagger interval: spread the initial burst across `concurrency` slots.
-            # Reduced from 300ms to 200ms for Gemini (faster ramp-up).
-            # e.g., Gemini concurrency=5: slots start at 0ms, 200ms, 400ms, 600ms, 800ms.
-            stagger_interval = 0.2 if is_gemini else 0.2
-            print(f"[ImageGen] Batch strategy: provider={image_provider_str}, concurrency={concurrency}, scenes={len(scene_data)}, stagger={stagger_interval*1000:.0f}ms/slot")
+            # use_style_chain (gpt-image-2 のみ): serial 実行で scene[N-1] の出力を
+            # scene[N] の reference に渡す。並列化できないが style 一貫性を最大化。
+            if use_style_chain:
+                print(f"[ImageGen] Batch strategy: STYLE CHAIN (serial) | provider={image_provider_str} | scenes={len(scene_data)}")
+                # PROJECT_ROOT/api/uploads/previews 配下の絶対パスに resolved する。
+                # scene.image_path は "/static/previews/<filename>" (web 用 url) の形なので、
+                # filesystem ref に変換するため _image_service.output_dir を流用する。
+                previous_fs_path: Optional[str] = None
+                results: list[Optional[Exception]] = [None] * len(scene_data)
+                for i, scene_info in enumerate(scene_data):
+                    refs = [previous_fs_path] if previous_fs_path else None
+                    try:
+                        await _generate_one(scene_info, reference_image_paths=refs)
+                        # 次の iteration のために最新の output_path を web ref に変換せず
+                        # filesystem 絶対パスのまま保持する。DB 経由で再取得する。
+                        _db_lookup = SessionLocal()
+                        try:
+                            scene_obj = _db_lookup.query(StoryboardScene).filter(
+                                StoryboardScene.id == scene_info["id"]
+                            ).first()
+                            if scene_obj and scene_obj.image_path:
+                                # image_path は "/static/previews/<filename>" なので
+                                # _image_service.output_dir 配下の実パスに変換する
+                                filename = os.path.basename(scene_obj.image_path)
+                                fs_path = str(_image_service.output_dir / filename)
+                                if os.path.isfile(fs_path) and os.path.getsize(fs_path) > 100:
+                                    previous_fs_path = fs_path
+                                else:
+                                    # 失敗 / placeholder の場合は chain をリセット
+                                    previous_fs_path = None
+                            else:
+                                previous_fs_path = None
+                        finally:
+                            _db_lookup.close()
+                    except Exception as e:
+                        results[i] = e
+                        print(f"[ImageGen] Style-chain scene {scene_info['id']} failed: {e}")
+                        # 失敗時は chain をリセット (壊れた参照を引き継がない)
+                        previous_fs_path = None
+            else:
+                # Provider-specific concurrency strategy (既存): 5 concurrent + stagger.
+                is_gemini = image_provider_str in ("gemini", "gemini_pro")
+                concurrency = min(5, len(scene_data)) if is_gemini else min(5, len(scene_data))
+                sem = _asyncio.Semaphore(concurrency)
+                stagger_interval = 0.2 if is_gemini else 0.2
+                print(f"[ImageGen] Batch strategy: provider={image_provider_str}, concurrency={concurrency}, scenes={len(scene_data)}, stagger={stagger_interval*1000:.0f}ms/slot")
 
-            async def _generate_one_with_sem(scene_info: dict, scene_index: int) -> None:
-                # Only stagger the initial `concurrency` tasks to spread the first burst.
-                # Tasks beyond the first batch acquire the semaphore normally (no delay)
-                # because they will naturally start only after a previous task completes.
-                if scene_index < concurrency and scene_index > 0:
-                    await _asyncio.sleep(stagger_interval * scene_index)
-                async with sem:
-                    await _generate_one(scene_info)
+                async def _generate_one_with_sem(scene_info: dict, scene_index: int) -> None:
+                    if scene_index < concurrency and scene_index > 0:
+                        await _asyncio.sleep(stagger_interval * scene_index)
+                    async with sem:
+                        await _generate_one(scene_info)
 
-            tasks = [_generate_one_with_sem(si, i) for i, si in enumerate(scene_data)]
-            results = await _asyncio.gather(*tasks, return_exceptions=True)
+                tasks = [_generate_one_with_sem(si, i) for i, si in enumerate(scene_data)]
+                results = await _asyncio.gather(*tasks, return_exceptions=True)
 
             # Log any per-scene exceptions (they don't abort sibling tasks).
             for i, result in enumerate(results):
@@ -1294,7 +1353,8 @@ async def generate_images(
 
 
 class GenerateSingleImageRequest(PydanticBaseModel):
-    provider: Optional[str] = "imagen"
+    # provider=None (省略) → backend smart-default (generate_images と同じロジック)
+    provider: Optional[str] = None
 
 
 @router.post("/{storyboard_id}/scenes/{scene_id}/generate-image")
@@ -1317,13 +1377,27 @@ async def generate_single_image(
     if not scene:
         raise HTTPException(404, "シーンが見つかりません")
 
-    # Image generation always uses the provider from the request body (default: imagen).
-    # The storyboard's `provider` field is for VIDEO generation only.
-    image_provider_str = body.provider if body.provider else "imagen"
+    # provider 解決 — generate_images と同じ smart-default ロジックを共有:
+    #   省略時: OPENAI_API_KEY 有 → gpt_image_2 / 無 → imagen
+    #   明示指定: そのまま (無効値は imagen にフォールバック)
+    from api.models.schemas import AppSetting as _AppSetting
+    if body.provider is None:
+        _setting = (
+            db.query(_AppSetting)
+            .filter(_AppSetting.key == "OPENAI_API_KEY")
+            .first()
+        )
+        _has_openai = bool(
+            os.environ.get("OPENAI_API_KEY") or (_setting and _setting.value)
+        )
+        image_provider_str = "gpt_image_2" if _has_openai else "imagen"
+    else:
+        image_provider_str = body.provider
     try:
         provider = ImageProvider(image_provider_str)
     except ValueError:
         provider = ImageProvider.IMAGEN
+        image_provider_str = "imagen"
 
     # Fetch storyboard-level style_seed
     sb = db.query(Storyboard).filter(Storyboard.id == storyboard_id).first()

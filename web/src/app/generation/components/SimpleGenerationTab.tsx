@@ -172,7 +172,8 @@ export default function SimpleGenerationTab({ themes }: SimpleGenerationTabProps
   const [creating, setCreating] = useState(false);
 
   // Step 1: 画像生成
-  const [imageProvider, setImageProvider] = useState("gemini");
+  // 空文字 = Auto (backend smart-default)
+  const [imageProvider, setImageProvider] = useState("");
   const [generatingImages, setGeneratingImages] = useState(false);
   const [genStatus, setGenStatus] = useState<GenerationStatus | null>(null);
   const [pollingImages, setPollingImages] = useState(false);
@@ -593,6 +594,9 @@ export default function SimpleGenerationTab({ themes }: SimpleGenerationTabProps
               onChange={(e) => setNewProvider(e.target.value)}
               className="w-full px-2 py-1.5 bg-[#132040] border border-blue-400/[0.12] rounded-lg text-xs text-white focus:border-blue-500/40 focus:outline-none"
             >
+              <option value="">Auto (環境最適)</option>
+              <option value="gpt_image_2">GPT-Image-2 (最高品質・style chain)</option>
+              <option value="fal">fal.ai Flux Pro 1.1 Ultra</option>
               <option value="gemini">Gemini Flash (標準)</option>
               <option value="gemini_pro">Gemini Pro (高品質)</option>
               <option value="imagen">Imagen 4 Fast (最速)</option>
@@ -746,6 +750,9 @@ function Step1ImageGeneration({
               disabled={isRunning}
               className="w-full px-3 py-2.5 bg-[#132040] border border-blue-400/[0.12] rounded-xl text-sm text-white focus:border-blue-500/40 focus:outline-none disabled:opacity-50"
             >
+              <option value="">Auto (環境最適)</option>
+              <option value="gpt_image_2">GPT-Image-2 (最高品質・style chain)</option>
+              <option value="fal">fal.ai Flux Pro 1.1 Ultra</option>
               <option value="gemini">Gemini Flash (標準)</option>
               <option value="gemini_pro">Gemini Pro (高品質)</option>
               <option value="imagen">Imagen 4 Fast (最速)</option>

@@ -756,9 +756,12 @@ export async function generateStoryboardImages(
   storyboardId: number,
   provider?: string
 ): Promise<JobStatus> {
+  // 空文字 / undefined は "auto" として扱い、backend smart-default にゆだねる
+  // (OPENAI_API_KEY 有 → gpt_image_2、無 → imagen)。明示指定があるときだけ送る。
+  const body = provider ? { provider } : {};
   return apiFetch(`/api/storyboards/${storyboardId}/generate-images`, {
     method: "POST",
-    body: JSON.stringify({ provider }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -767,9 +770,10 @@ export async function regenerateSceneImage(
   sceneId: number,
   provider?: string
 ): Promise<JobStatus> {
+  const body = provider ? { provider } : {};
   return apiFetch(`/api/storyboards/${storyboardId}/scenes/${sceneId}/generate-image`, {
     method: "POST",
-    body: JSON.stringify({ provider }),
+    body: JSON.stringify(body),
   });
 }
 

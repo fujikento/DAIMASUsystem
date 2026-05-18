@@ -119,13 +119,14 @@ def _get_template_font():
 
 
 class ImageProvider(str, Enum):
-    GEMINI = "gemini"           # Nano Banana (Gemini 2.5 Flash Image) - fast, cheap
-    GEMINI_PRO = "gemini_pro"   # Nano Banana Pro (Gemini 3 Pro Image) - higher quality
-    IMAGEN = "imagen"           # Imagen 4 Fast - fastest (3-5s)
-    IMAGEN_FAST = "imagen_fast" # Alias for Imagen 4 Fast
-    FAL = "fal"                 # fal.ai Flux Pro v1.1 Ultra
-    FLUX = "flux"               # Flux Pro (placeholder - legacy)
-    RUNWAY = "runway"           # Runway (placeholder)
+    GEMINI = "gemini"             # Nano Banana (Gemini 2.5 Flash Image) - fast, cheap
+    GEMINI_PRO = "gemini_pro"     # Nano Banana Pro (Gemini 3 Pro Image) - higher quality
+    IMAGEN = "imagen"             # Imagen 4 Fast - fastest (3-5s)
+    IMAGEN_FAST = "imagen_fast"   # Alias for Imagen 4 Fast
+    FAL = "fal"                   # fal.ai Flux Pro v1.1 Ultra
+    FLUX = "flux"                 # Flux Pro (placeholder - legacy)
+    RUNWAY = "runway"             # Runway (placeholder)
+    GPT_IMAGE_2 = "gpt_image_2"   # OpenAI gpt-image-2 — 絵コンテ用最高品質。t2i + i2i (style chain)
 
 
 class ImageStatus(str, Enum):
@@ -159,6 +160,9 @@ class ImageGenerationJob:
     mood: Optional[str] = None         # calm/dramatic/mysterious/festive/romantic/epic
     camera_angle: Optional[str] = None  # bird_eye/wide/close_up/pan/dynamic
     style_seed: Optional[int] = None   # Seed for fal.ai style consistency across scenes
+    # gpt-image-2 image-to-image (style chain) 用: 1..16 枚の参照画像パス。
+    # 指定があれば client.images.edit() で前シーンの絵をベースに次シーンを生成する。
+    reference_image_paths: Optional[list[str]] = None
     created_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
     preview_only: bool = True
@@ -265,6 +269,7 @@ class ImageGeneratorService:
         self.fal_api_key = _get_api_key("FAL_API_KEY")
         self.flux_api_key = _get_api_key("FLUX_API_KEY")
         self.runway_api_key = _get_api_key("RUNWAY_API_KEY")
+        self.openai_api_key = _get_api_key("OPENAI_API_KEY")
 
         # Cached Gemini client — lazily initialised on first use.
         # Storing the key that was used to build the client lets us detect
@@ -315,6 +320,7 @@ class ImageGeneratorService:
         camera_angle: Optional[str] = None,
         style_seed: Optional[int] = None,
         preview_only: bool = True,
+        reference_image_paths: Optional[list[str]] = None,
     ) -> ImageGenerationJob:
         """画像生成ジョブを作成"""
         self._job_counter += 1
@@ -339,6 +345,7 @@ class ImageGeneratorService:
             camera_angle=camera_angle,
             style_seed=style_seed,
             preview_only=preview_only,
+            reference_image_paths=reference_image_paths,
         )
         self.jobs[job_id] = job
         return job
@@ -363,6 +370,8 @@ class ImageGeneratorService:
                 await self._generate_flux(job)
             elif job.provider == ImageProvider.RUNWAY:
                 await self._generate_runway(job)
+            elif job.provider == ImageProvider.GPT_IMAGE_2:
+                await self._generate_gpt_image_2(job)
 
             job.status = ImageStatus.COMPLETE
             job.completed_at = time.time()
@@ -1416,6 +1425,161 @@ class ImageGeneratorService:
         #         f.write(img_resp.content)
 
         await self._create_placeholder(job)
+
+    async def _generate_gpt_image_2(self, job: ImageGenerationJob):
+        """OpenAI gpt-image-2 — 絵コンテ用最高品質画像生成。
+
+        text-to-image (新規シーン) と image-to-image (style chain) の両モード対応:
+        - job.reference_image_paths が空: client.images.generate でテキストから生成
+        - job.reference_image_paths に 1..16 枚: client.images.edit で前シーンの画風を
+          引き継いで生成(scene-to-scene style continuity)
+
+        モデルの制約:
+        - サポートサイズ: 1024x1024 / 1536x1024 (3:2 landscape) / 1024x1536 (2:3 portrait) / auto
+        - 21:9 / 32:9 はネイティブ非対応 → 1536x1024 で生成し、downstream _postprocess_from_pil
+          で物理テーブル寸法に crop / scale する。
+        - quality: low / medium / high / auto (default high for 絵コンテ)
+        - 戻り値の b64_json を base64 デコードして PIL に流す。
+
+        参照画像の安全性:
+        - reference_image_paths は呼び出し側 (generate-images endpoint) が責任を持って
+          信頼済みパス (storyboard の image_path) のみを渡すこと。任意 path を受け取らない。
+        """
+        import time as _t
+        t_total_start = _t.monotonic()
+
+        # Re-fetch key in case it was saved via Settings UI after init
+        api_key = _get_api_key("OPENAI_API_KEY") or self.openai_api_key
+        if not api_key:
+            print("[ImageGen] OPENAI_API_KEY is not configured. Creating placeholder.")
+            await self._create_placeholder(job)
+            return
+
+        try:
+            from openai import OpenAI
+        except ImportError:
+            print("[ImageGen] openai SDK not installed. Run: pip install openai")
+            await self._create_placeholder(job)
+            return
+
+        client = OpenAI(api_key=api_key)
+        # User の CLAUDE.md tooling-priority.md 指定で default "gpt-image-2"。
+        # API 側で reject される環境 (古い account etc.) では env で "gpt-image-1" など
+        # 動作確認済みの ID に上書きできる。
+        model = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2")
+
+        # ── サイズ決定: gpt-image-2 の対応サイズに丸める ──
+        # zone モードでも 1024 系を渡し、_postprocess_from_pil で正確な物理寸法に整形する。
+        if job.projection_mode == "zone" or job.aspect_ratio == "1:1":
+            gen_size = "1024x1024"
+        elif job.aspect_ratio == "9:16":
+            gen_size = "1024x1536"
+        else:
+            # unified / 21:9 / 32:9 / 16:9 — 最ワイドの 3:2 landscape を使用
+            gen_size = "1536x1024"
+
+        prompt = self._build_aspect_prompt(
+            job.prompt, job.aspect_ratio, job.projection_mode, job.target_zones,
+            mood=job.mood, camera_angle=job.camera_angle,
+        )
+
+        has_refs = bool(job.reference_image_paths)
+        print(f"[ImageGen] gpt-image-2 model | size={gen_size} | mode={'i2i' if has_refs else 't2i'}"
+              + (f" | refs={len(job.reference_image_paths)}" if has_refs else ""))
+
+        loop = asyncio.get_running_loop()
+
+        def _call_api():
+            if has_refs:
+                # image-to-image: 参照画像を開いて edit() に渡す。
+                # 呼び出し側が信頼済みパスのみを渡す前提だが、ここでも flat check を行う。
+                opened = []
+                try:
+                    for p in job.reference_image_paths:
+                        if not p or not os.path.isfile(p):
+                            print(f"[ImageGen] reference image not found, skipping: {p}")
+                            continue
+                        opened.append(open(p, "rb"))
+                    if not opened:
+                        # 参照画像が一つも開けなかった場合は t2i に fallback
+                        print("[ImageGen] No valid reference images, falling back to text-to-image")
+                        return client.images.generate(
+                            model=model, prompt=prompt, size=gen_size,
+                            quality="high", n=1,
+                        )
+                    return client.images.edit(
+                        model=model,
+                        image=opened,
+                        prompt=prompt,
+                        size=gen_size,
+                        quality="high",
+                        n=1,
+                    )
+                finally:
+                    for f in opened:
+                        try:
+                            f.close()
+                        except OSError:
+                            pass
+            else:
+                return client.images.generate(
+                    model=model, prompt=prompt, size=gen_size,
+                    quality="high", n=1,
+                )
+
+        t0 = _t.monotonic()
+        try:
+            response = await asyncio.wait_for(
+                loop.run_in_executor(_API_THREAD_POOL, _call_api),
+                timeout=180.0,  # gpt-image-2 high quality can take 30-60s
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError("OpenAI gpt-image-2 API call timed out after 180 seconds")
+        t_api = _t.monotonic() - t0
+
+        # Extract base64 image from response
+        if not response.data:
+            raise RuntimeError("OpenAI gpt-image-2 returned no image data")
+        b64 = response.data[0].b64_json
+        if not b64:
+            raise RuntimeError("OpenAI gpt-image-2 returned no b64_json")
+
+        import base64 as _b64
+        image_bytes = _b64.b64decode(b64)
+
+        output = Path(job.output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        # Post-process and save metadata in parallel (同じ pattern を _generate_fal と共有)
+        t0 = _t.monotonic()
+        pil_image = _PILImage.open(io.BytesIO(image_bytes))
+
+        postprocess_future = loop.run_in_executor(
+            _API_THREAD_POOL,
+            functools.partial(
+                self._postprocess_from_pil,
+                pil_image,
+                job.output_path,
+                job.aspect_ratio,
+                job.projection_mode,
+                job.target_zones,
+            ),
+        )
+        metadata_future = loop.run_in_executor(
+            _API_THREAD_POOL,
+            functools.partial(self._save_metadata, job, model),
+        )
+        await asyncio.gather(postprocess_future, metadata_future)
+        t_save = _t.monotonic() - t0
+
+        t_total = _t.monotonic() - t_total_start
+        img_size_kb = len(image_bytes) / 1024
+        print(
+            f"[TIMING] scene={job.scene_id} GPT-IMAGE-2 DONE | "
+            f"api={t_api*1000:.0f}ms | save+meta={t_save*1000:.0f}ms | "
+            f"TOTAL={t_total*1000:.0f}ms | img={img_size_kb:.0f}KB | "
+            f"mode={'i2i' if has_refs else 't2i'}"
+        )
 
     async def _generate_runway(self, job: ImageGenerationJob):
         """Runway Gen-4 Image API -- 画像生成"""
