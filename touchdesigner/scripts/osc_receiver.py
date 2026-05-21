@@ -19,6 +19,15 @@ OSC_MAP = {
     '/transition': 'transition_engine',
     '/birthday/trigger': 'birthday_controller',
     '/zone/select': 'zone_selector',
+    '/seat/content': 'seat_router',
+}
+
+# 席 (投影エリア) ごとの TouchDesigner 出力グループ名のマッピング。
+# backend の ProjectionConfig.id → TD 内の出力 COMP / Container 名。
+# 実環境ではここを店舗の物理 PJ 構成に合わせて編集する。
+SEAT_OUTPUT_MAP = {
+    1: 'seat1_output',   # 例: メインテーブル (3PJ ブレンド)
+    2: 'seat2_output',   # 例: VIP個室 (1PJ)
 }
 
 
@@ -46,6 +55,8 @@ def onReceiveOSC(address, args):
         handle_birthday(args)
     elif address == '/zone/select':
         handle_zone_select(args)
+    elif address == '/seat/content':
+        handle_seat_content(args)
 
 
 def handle_play(args):
@@ -114,6 +125,84 @@ def handle_zone_select(args):
     # op('zone_selector').par.activeZone = zone
 
 
+def handle_seat_content(args):
+    """席 (投影エリア) 単位のコンテンツロード。
+
+    OSC: /seat/content seat_id file_path zone mode
+
+    backend (api/services/osc_controller.load_content_seat) から送られる。
+    複数席を別々の演出で同時投影するための基本ハンドラ。
+
+    mode:
+      - unified:      席の全幅に 1 動画を連結投影 (zone は無視 / "all")
+      - per_zone:     ゾーンごとに別動画 (zone="all" は全ゾーン更新、"1,2" は部分)
+      - synchronized: 全ゾーンに同じ動画を同期再生
+
+    TD 実装方針 (コメントは擬似コード):
+      1. seat_id → SEAT_OUTPUT_MAP で出力グループ COMP を引く
+      2. その COMP 配下の File In TOP に file_path を設定
+      3. mode で zone 分割の有無を切り替える
+    """
+    if len(args) < 2:
+        print(f"[Seat Content] invalid args (need seat_id, file_path): {args}")
+        return
+
+    try:
+        seat_id = int(args[0])
+    except (ValueError, TypeError):
+        print(f"[Seat Content] invalid seat_id: {args[0]!r}")
+        return
+
+    file_path = args[1]
+    zone = args[2] if len(args) >= 3 else 'all'
+    mode = args[3] if len(args) >= 4 else 'unified'
+
+    output_group = SEAT_OUTPUT_MAP.get(seat_id)
+    if output_group is None:
+        print(f"[Seat Content] WARNING: seat_id {seat_id} not in SEAT_OUTPUT_MAP "
+              f"({sorted(SEAT_OUTPUT_MAP)}). コンテンツをロードできません。")
+        return
+
+    print(f"[Seat Content] seat={seat_id} ({output_group}) "
+          f"file={file_path} zone={zone} mode={mode}")
+
+    if mode == 'unified':
+        # 席の全幅に 1 動画。例:
+        # op(output_group).op('unified_in').par.file = file_path
+        # op(output_group).par.zonesplit = 0
+        pass
+    elif mode == 'synchronized':
+        # 全ゾーンに同じ動画を同期再生。例:
+        # for z in range(zone_count_of(seat_id)):
+        #     op(output_group).op(f'zone{z}_in').par.file = file_path
+        pass
+    elif mode == 'per_zone':
+        # ゾーンごとに別動画。zone="all" は全ゾーン、"1,2" は該当のみ。
+        targets = _parse_zone_spec(zone, seat_id)
+        for z in targets:
+            # op(output_group).op(f'zone{z}_in').par.file = file_path
+            print(f"  [per_zone] zone{z} <- {file_path}")
+    else:
+        print(f"[Seat Content] unknown mode '{mode}', falling back to unified")
+
+
+def _parse_zone_spec(zone, seat_id):
+    """zone 指定文字列を 0-based のゾーン index リストに変換する。
+
+    "all" → 全ゾーン (SEAT_ZONE_COUNT より、ここでは簡易に 0..3)。
+    "1,2" → [0, 1] (1-based 入力を 0-based に変換)。
+    """
+    if zone == 'all' or not zone:
+        # 実環境では seat_id ごとの zone_count を引く。ここでは最大 4 を仮定。
+        return list(range(4))
+    out = []
+    for tok in str(zone).split(','):
+        tok = tok.strip()
+        if tok.isdigit():
+            out.append(int(tok) - 1)
+    return out
+
+
 def store_status(status, timeline_id=None):
     """再生状態を保存（ステータス問い合わせ用）"""
     # TouchDesignerのストレージに保存
@@ -138,6 +227,7 @@ if __name__ == '__main__':
     dispatcher.map("/transition", lambda addr, *args: onReceiveOSC(addr, list(args)))
     dispatcher.map("/birthday/trigger", lambda addr, *args: onReceiveOSC(addr, list(args)))
     dispatcher.map("/zone/select", lambda addr, *args: onReceiveOSC(addr, list(args)))
+    dispatcher.map("/seat/content", lambda addr, *args: onReceiveOSC(addr, list(args)))
 
     server = ThreadingOSCUDPServer(("0.0.0.0", OSC_PORT), dispatcher)
     print(f"OSC Server listening on port {OSC_PORT}")

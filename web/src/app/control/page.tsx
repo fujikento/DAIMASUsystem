@@ -13,6 +13,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import SpatialMapView from "./components/SpatialMapView";
+import ShowControlPanel from "./components/ShowControlPanel";
 import {
   getProjectionStatus,
   playProjection,
@@ -375,6 +376,11 @@ export default function ControlPage() {
 
         {/* Transport rail — decorative separator line */}
         <div className="absolute left-8 right-8 top-1/2 -translate-y-1/2 h-px bg-gradient-to-r from-transparent via-white/[0.04] to-transparent pointer-events-none" />
+      </div>
+
+      {/* ── 席別ショーコントロール ─────────────────────────────────────── */}
+      <div className="rounded-2xl border border-blue-400/10 bg-[#0e1d32] p-6">
+        <ShowControlPanel />
       </div>
 
       {/* ── Spatial Map ───────────────────────────────────────────────── */}

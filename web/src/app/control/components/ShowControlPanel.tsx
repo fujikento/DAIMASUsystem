@@ -23,12 +23,20 @@ import {
   pauseShow,
   stopShow,
   createShowWebSocket,
+  fetchTables,
   type ShowData,
   type ShowListItem,
   type ShowStatus,
   type ShowCue,
   type ShowWsMessage,
+  type ProjectionTable,
 } from "@/lib/api";
+
+const PLAYBACK_MODE_LABEL: Record<string, string> = {
+  unified: "連結",
+  per_zone: "席ごと",
+  synchronized: "同期",
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -146,6 +154,7 @@ function CueRow({ cue, isActive, isCompleted, onJump, disabled }: CueRowProps) {
 
 export default function ShowControlPanel() {
   const [shows, setShows] = useState<ShowListItem[]>([]);
+  const [tables, setTables] = useState<ProjectionTable[]>([]);
   const [selectedShow, setSelectedShow] = useState<ShowData | null>(null);
   const [showStatus, setShowStatus] = useState<ShowStatus | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
@@ -174,12 +183,23 @@ export default function ShowControlPanel() {
     }
   }, []);
 
-  // ─── ショー一覧取得 ─────────────────────────────────────────────
+  // ─── ショー一覧 + 席一覧取得 ────────────────────────────────────
   useEffect(() => {
     fetchShows()
       .then(setShows)
       .catch(() => {});
+    fetchTables()
+      .then(setTables)
+      .catch(() => {});
   }, []);
+
+  const seatName = useCallback(
+    (id: number | null | undefined): string | null => {
+      if (!id) return null;
+      return tables.find((t) => t.id === id)?.name ?? `席 #${id}`;
+    },
+    [tables]
+  );
 
   // ─── ショー選択 ─────────────────────────────────────────────────
   const selectShow = useCallback(
@@ -416,8 +436,20 @@ export default function ShowControlPanel() {
                     : "bg-white/[0.03] border border-white/[0.06] text-neutral-300 hover:bg-white/[0.06]"
                 }`}
               >
-                <div>
-                  <p className="text-sm font-medium">{s.name}</p>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium truncate">{s.name}</p>
+                    {seatName(s.projection_config_id) && (
+                      <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-white/10 text-neutral-400">
+                        {seatName(s.projection_config_id)}
+                      </span>
+                    )}
+                    {s.playback_mode && PLAYBACK_MODE_LABEL[s.playback_mode] && (
+                      <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-blue-400/30 text-blue-300">
+                        {PLAYBACK_MODE_LABEL[s.playback_mode]}
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-neutral-500 mt-0.5">
                     {s.status === "standby" && "待機中"}
                     {s.status === "running" && "実行中"}
@@ -426,7 +458,7 @@ export default function ShowControlPanel() {
                   </p>
                 </div>
                 {s.status === "running" && (
-                  <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
                 )}
               </button>
             ))}
