@@ -1181,6 +1181,8 @@ export interface ShowData {
   id: number;
   name: string;
   storyboard_id: number | null;
+  projection_config_id: number | null;
+  playback_mode: string; // unified / per_zone / synchronized
   status: string; // standby / running / paused / completed
   current_cue_id: number | null;
   created_at: string;
@@ -1191,6 +1193,8 @@ export interface ShowListItem {
   id: number;
   name: string;
   storyboard_id: number | null;
+  projection_config_id: number | null;
+  playback_mode: string;
   status: string;
   current_cue_id: number | null;
   created_at: string;
@@ -1218,6 +1222,8 @@ export async function fetchShow(id: number): Promise<ShowData> {
 export async function createShow(data: {
   name: string;
   storyboard_id?: number;
+  projection_config_id?: number;
+  playback_mode?: "unified" | "per_zone" | "synchronized";
 }): Promise<ShowData> {
   return apiFetch("/api/shows", {
     method: "POST",

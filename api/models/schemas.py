@@ -754,7 +754,8 @@ class ShowCreate(BaseModel):
     name: str
     storyboard_id: Optional[int] = None
     projection_config_id: Optional[int] = None
-    playback_mode: str = "unified"
+    # None なら create_show が storyboard.mode を継承する (codex P1)
+    playback_mode: Optional[str] = None
 
 
 class ShowResponse(BaseModel):

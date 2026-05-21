@@ -385,18 +385,27 @@ def create_show(body: ShowCreate, db: Session = Depends(get_db)):
     """ショー作成。storyboard_id を指定するとシーンからキューを自動生成。
     席 (projection_config_id) は body 指定 → storyboard 継承 の順で解決する。
     """
-    # 席を解決: 明示指定 > storyboard の席 > None
+    # 席 + 再生モードを解決:
+    #   席:   明示指定 > storyboard の席 > None
+    #   mode: 明示指定 > storyboard.mode > "unified" (codex P1: Step2 で選んだ mode を継承)
     projection_config_id = body.projection_config_id
-    if projection_config_id is None and body.storyboard_id:
+    playback_mode = body.playback_mode
+    if (projection_config_id is None or playback_mode is None) and body.storyboard_id:
         _sb = db.query(Storyboard).filter(Storyboard.id == body.storyboard_id).first()
         if _sb:
-            projection_config_id = _sb.projection_config_id
+            if projection_config_id is None:
+                projection_config_id = _sb.projection_config_id
+            if playback_mode is None:
+                playback_mode = _sb.mode
+    playback_mode = playback_mode or "unified"
+    if playback_mode not in ("unified", "per_zone", "synchronized"):
+        raise HTTPException(400, f"不明な playback_mode です: {playback_mode}")
 
     show = Show(
         name=body.name,
         storyboard_id=body.storyboard_id,
         projection_config_id=projection_config_id,
-        playback_mode=body.playback_mode or "unified",
+        playback_mode=playback_mode,
         status="standby",
     )
     db.add(show)
