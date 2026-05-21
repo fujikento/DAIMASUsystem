@@ -39,6 +39,27 @@ DAIMASUsystem backend が送信する OSC を TouchDesigner 側で受け取り�
 | `/zone/content` | `zone_id:int`, `file_path:str` | ゾーン個別コンテンツ |
 | `/zone/brightness` | `zone_id:int`, `brightness:float` | ゾーン個別輝度 |
 | `/preset/load` | `preset_id:int` | プリセット呼び出し |
+| `/seat/content` | `seat_id:int`, `file_path:str`, `zone:str`, `mode:str` | **席 (投影エリア) 単位のコンテンツロード** |
+
+#### 席 (テーブル) 単位の出し分け — `/seat/content`
+
+複数席を別々の演出で同時投影するための基本コマンド (Phase B)。
+`seat_id` は backend の `ProjectionConfig.id` (席管理画面で登録した席)。
+
+| arg | 例 | 説明 |
+|---|---|---|
+| `seat_id` | `1` | 投影エリア ID。TD はこの ID ごとに別の出力グループへルーティングする |
+| `file_path` | `.../main.mp4` | 投影する動画/画像の絶対パス |
+| `zone` | `"all"` / `"1,2"` | エリア内の対象ゾーン。`all` は全幅 |
+| `mode` | `"unified"` / `"per_zone"` / `"synchronized"` | 出し方 |
+
+`mode` の意味:
+- **unified**: 席の全幅 (例 5520×1200) に 1 動画を連結投影
+- **per_zone**: ゾーンごとに別動画 (席内の各人前に異なる映像)
+- **synchronized**: 全ゾーンに同じ動画を同期再生
+
+TD 側パッチは `seat_id` で出力先 (どの PJ 群 = どの席) を選び、`mode` で
+zone 分割の有無を切り替える。`zone="1,2"` 等の部分指定時は該当ゾーンのみ更新。
 
 ### Ack mode (オプション、env `OSC_ACK_ENABLED=1`)
 

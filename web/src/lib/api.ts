@@ -768,6 +768,8 @@ export async function updateStoryboard(
     day_of_week?: string;
     theme?: string;
     provider?: string;
+    mode?: "unified" | "per_zone" | "synchronized";
+    projection_config_id?: number;
   }
 ): Promise<StoryboardData> {
   return apiFetch(`/api/storyboards/${id}`, {

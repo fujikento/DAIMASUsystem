@@ -323,6 +323,22 @@ class OSCController:
         """
         return self.send("/content/load", file_path, zone)
 
+    def load_content_seat(
+        self,
+        seat_id: int,
+        file_path: str,
+        zone: str = "all",
+        mode: str = "unified",
+    ) -> OscSendResult:
+        """席 (投影エリア) 単位でコンテンツをロードする。
+
+        OSC アドレス `/seat/content seat_id file_path zone mode`。
+        TouchDesigner 側は seat_id ごとに別の出力グループへルーティングし、
+        mode により全幅 (unified) / ゾーン個別 (per_zone) / 同期 (synchronized)
+        を切り替える。複数席を同時に別演出で流す時の基本コマンド。
+        """
+        return self.send("/seat/content", seat_id, file_path, zone, mode)
+
     def transition(self, transition_type: str, duration: float = 1.0) -> OscSendResult:
         return self.send("/transition", transition_type, duration)
 

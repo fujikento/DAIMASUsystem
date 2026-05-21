@@ -12,6 +12,7 @@ import {
 import {
   generateScript,
   updateScene,
+  updateStoryboard,
   type StoryboardData,
   type StoryboardScene,
 } from "@/lib/api";
@@ -24,6 +25,14 @@ const COURSE_LABEL: Record<string, string> = {
   dessert: "デザート",
 };
 
+type PlaybackMode = "unified" | "per_zone" | "synchronized";
+
+const MODE_OPTIONS: Array<{ key: PlaybackMode; label: string; desc: string }> = [
+  { key: "unified", label: "連結", desc: "テーブル全幅に1動画。複数席を連続したパノラマ演出。" },
+  { key: "per_zone", label: "席ごと", desc: "ゾーン毎に別動画。各人前に異なる映像。" },
+  { key: "synchronized", label: "同期", desc: "全席で同じ動画を同時再生。揃った演出。" },
+];
+
 interface Props {
   storyboard: StoryboardData;
   onReload: () => Promise<void>;
@@ -35,6 +44,23 @@ export default function Step2Script({ storyboard, onReload, onNext }: Props) {
   const [concept, setConcept] = useState("");
   const [showConceptInput, setShowConceptInput] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [modeSaving, setModeSaving] = useState(false);
+
+  const currentMode: PlaybackMode =
+    (storyboard.mode as PlaybackMode) || "unified";
+
+  async function handleModeChange(mode: PlaybackMode) {
+    if (mode === currentMode) return;
+    setModeSaving(true);
+    try {
+      await updateStoryboard(storyboard.id, { mode });
+      await onReload();
+    } catch (e) {
+      alert(`モード変更失敗: ${e instanceof Error ? e.message : ""}`);
+    } finally {
+      setModeSaving(false);
+    }
+  }
 
   async function handleAIGenerate() {
     setGenLoading(true);
@@ -59,6 +85,49 @@ export default function Step2Script({ storyboard, onReload, onNext }: Props) {
         <h2 className="text-lg font-semibold text-white">台本</h2>
         <p className="text-xs text-neutral-500">
           各シーンを編集します。テーマのテンプレートが入っているのでそのまま次へも、AI で書き直しも可能。
+        </p>
+      </div>
+
+      {/* ─ Playback mode selector ─ */}
+      <div className="rounded-md bg-[#11141a] border border-white/10 p-3 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-semibold text-neutral-300 uppercase tracking-wider">
+            投影モード
+          </h3>
+          {modeSaving && (
+            <Loader2 size={12} className="animate-spin text-neutral-500" />
+          )}
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {MODE_OPTIONS.map((opt) => {
+            const active = opt.key === currentMode;
+            return (
+              <button
+                key={opt.key}
+                onClick={() => handleModeChange(opt.key)}
+                disabled={modeSaving}
+                className={`text-left p-2.5 rounded border transition-colors disabled:opacity-60 ${
+                  active
+                    ? "border-blue-400/50 bg-blue-500/10"
+                    : "border-white/10 bg-transparent hover:bg-white/[0.03]"
+                }`}
+              >
+                <div
+                  className={`text-sm font-semibold ${
+                    active ? "text-blue-200" : "text-neutral-200"
+                  }`}
+                >
+                  {opt.label}
+                </div>
+                <p className="text-[10px] text-neutral-500 leading-snug mt-0.5">
+                  {opt.desc}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[10px] text-neutral-600">
+          ※ 完成後の Step 4「テーブル投影プレビュー」でも切り替えて確認できます。投影時はこのモードが既定で使われます。
         </p>
       </div>
 

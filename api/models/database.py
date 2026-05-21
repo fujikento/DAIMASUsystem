@@ -167,6 +167,10 @@ def init_db():
         _add_column_if_missing(conn, "storyboards", "style_seed", "INTEGER")
         _add_column_if_missing(conn, "storyboards", "projection_config_id", "INTEGER")
 
+        # shows: 席 (投影エリア) との紐付け + 再生モード (Phase B 席別ショー制御)
+        _add_column_if_missing(conn, "shows", "projection_config_id", "INTEGER")
+        _add_column_if_missing(conn, "shows", "playback_mode", "VARCHAR DEFAULT 'unified'")
+
         conn.commit()
 
     # ── スタートアップリカバリ ─────────────────────────────────

@@ -63,6 +63,32 @@ _active_jobs: dict[str, dict] = {}
 _sse_clients: list[asyncio.Queue] = []
 
 
+def _resolve_seat_dims(db: Session, projection_config_id: Optional[int]) -> dict:
+    """台本に紐付く席 (ProjectionConfig) の出力解像度を解決する。
+    projection_config_id 優先 → default 席 → 最古行 → ハードコードデフォルト。
+    画像 worker に渡して席ごとの解像度で生成させる (codex-gate P1 #3 対応)。
+    """
+    from api.models.schemas import ProjectionConfig as _PC
+    config = None
+    if projection_config_id is not None:
+        config = db.query(_PC).filter(_PC.id == projection_config_id).first()
+    if config is None:
+        config = (
+            db.query(_PC).filter(_PC.is_default == True).first()  # noqa: E712
+            or db.query(_PC).order_by(_PC.id).first()
+        )
+    if config is None:
+        return {"full_width": 5520, "full_height": 1200, "zone_count": 4}
+    full_width = (config.pj_width * config.pj_count) - (
+        config.blend_overlap * (config.pj_count - 1)
+    )
+    return {
+        "full_width": full_width,
+        "full_height": config.pj_height,
+        "zone_count": config.zone_count,
+    }
+
+
 def _notify_clients(event_type: str, data: dict) -> None:
     """SSE接続中の全クライアントにイベントをプッシュする"""
     message = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
@@ -391,6 +417,8 @@ class StoryboardUpdate(PydanticBaseModel):
     provider: Optional[str] = None
     title: Optional[str] = None
     style_seed: Optional[int] = None
+    mode: Optional[str] = None  # unified / per_zone / synchronized
+    projection_config_id: Optional[int] = None
 
 
 @router.patch("/{storyboard_id}", response_model=StoryboardResponse)
@@ -419,6 +447,17 @@ def update_storyboard(storyboard_id: int, data: StoryboardUpdate, db: Session = 
 
     if data.style_seed is not None:
         sb.style_seed = data.style_seed
+
+    if data.mode is not None:
+        if data.mode not in ("unified", "per_zone", "synchronized"):
+            raise HTTPException(400, f"不明なモードです: {data.mode}")
+        sb.mode = data.mode
+
+    if data.projection_config_id is not None:
+        from api.models.schemas import ProjectionConfig as _PC
+        if not db.query(_PC).filter(_PC.id == data.projection_config_id).first():
+            raise HTTPException(400, f"projection_config_id {data.projection_config_id} not found")
+        sb.projection_config_id = data.projection_config_id
 
     db.commit()
     db.refresh(sb)
@@ -1033,6 +1072,10 @@ async def generate_images(
     # Capture storyboard-level style_seed for fal.ai consistency
     storyboard_style_seed = sb.style_seed
 
+    # 席 (テーブル) の出力解像度を解決する。台本の projection_config_id を優先、
+    # 無ければ default 席。画像 worker にこの寸法を渡すと席ごとの解像度で出力される。
+    seat_dims = _resolve_seat_dims(db, sb.projection_config_id)
+
     # ジョブ情報をシリアライズ可能な形式で保存
     scene_data = [
         {
@@ -1051,6 +1094,9 @@ async def generate_images(
             "animation_speed": s.animation_speed or "normal",
             "prompt_modifier": s.prompt_modifier,
             "style_seed": storyboard_style_seed,
+            "full_width": seat_dims["full_width"],
+            "full_height": seat_dims["full_height"],
+            "zone_count": seat_dims["zone_count"],
         }
         for s in pending_scenes
     ]
@@ -1197,6 +1243,9 @@ async def generate_images(
                 camera_angle=scene_info.get("camera_angle"),
                 style_seed=scene_info.get("style_seed"),
                 reference_image_paths=reference_image_paths,
+                full_width=scene_info.get("full_width"),
+                full_height=scene_info.get("full_height"),
+                zone_count=scene_info.get("zone_count"),
             )
             # Run image generation BEFORE opening a DB session (Change 7)
             await _image_service.generate(img_job)
@@ -1465,6 +1514,7 @@ async def generate_single_image(
 
     # Fetch storyboard-level style_seed
     sb = db.query(Storyboard).filter(Storyboard.id == storyboard_id).first()
+    seat_dims = _resolve_seat_dims(db, sb.projection_config_id if sb else None)
 
     # コスト reserve (codex round 9 P2: single-scene image も cap 対象)
     from api.services.cost_tracker import (
@@ -1501,6 +1551,9 @@ async def generate_single_image(
         "animation_speed": scene.animation_speed or "normal",
         "prompt_modifier": scene.prompt_modifier,
         "style_seed": sb.style_seed if sb else None,
+        "full_width": seat_dims["full_width"],
+        "full_height": seat_dims["full_height"],
+        "zone_count": seat_dims["zone_count"],
     }
 
     job_id = f"imgscene_{scene_id}_{len(_active_jobs) + 1}"
@@ -1559,6 +1612,9 @@ async def generate_single_image(
                 mood=scene_info.get("mood"),
                 camera_angle=scene_info.get("camera_angle"),
                 style_seed=scene_info.get("style_seed"),
+                full_width=scene_info.get("full_width"),
+                full_height=scene_info.get("full_height"),
+                zone_count=scene_info.get("zone_count"),
             )
             # Run image generation BEFORE opening a DB session (same as batch _generate_one)
             # so that the expensive API call does not hold an open DB connection.

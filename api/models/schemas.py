@@ -442,6 +442,10 @@ class Show(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     storyboard_id = Column(Integer, ForeignKey("storyboards.id"), nullable=True)
+    # どの席 (投影エリア) で再生するショーか。OSC ターゲット解決に使う。
+    projection_config_id = Column(Integer, ForeignKey("projection_config.id"), nullable=True)
+    # 再生モード: unified (全幅1動画) / per_zone (席ごと) / synchronized (全席同期)
+    playback_mode = Column(String, nullable=False, default="unified")
     status = Column(String, default="standby")  # standby/running/paused/completed
     current_cue_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
@@ -749,12 +753,16 @@ class ShowCueResponse(ShowCueBase):
 class ShowCreate(BaseModel):
     name: str
     storyboard_id: Optional[int] = None
+    projection_config_id: Optional[int] = None
+    playback_mode: str = "unified"
 
 
 class ShowResponse(BaseModel):
     id: int
     name: str
     storyboard_id: Optional[int] = None
+    projection_config_id: Optional[int] = None
+    playback_mode: str = "unified"
     status: str
     current_cue_id: Optional[int] = None
     created_at: datetime
@@ -766,6 +774,8 @@ class ShowListResponse(BaseModel):
     id: int
     name: str
     storyboard_id: Optional[int] = None
+    projection_config_id: Optional[int] = None
+    playback_mode: str = "unified"
     status: str
     current_cue_id: Optional[int] = None
     created_at: datetime

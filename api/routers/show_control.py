@@ -24,6 +24,7 @@ from api.models.database import SessionLocal, get_db
 from api.models.schemas import (
     Show,
     ShowCue,
+    Storyboard,
     StoryboardScene,
     ShowCreate,
     ShowCueCreate,
@@ -201,8 +202,18 @@ def _build_status(show_id: int, db: Session) -> Optional[ShowStatusResponse]:
     )
 
 
-async def _execute_cue(cue: ShowCue, show_id: int) -> bool:
+async def _execute_cue(
+    cue: ShowCue,
+    show_id: int,
+    seat_id: Optional[int] = None,
+    playback_mode: str = "unified",
+) -> bool:
     """キューの内容を OSC で実行し、成功可否を返す。
+
+    Args:
+        seat_id: 席 (投影エリア) ID。指定時は /seat/content で席を指定して送信。
+                 None なら従来の全体向け /content/load。
+        playback_mode: unified / per_zone / synchronized。seat_id 指定時のみ有効。
 
     Returns:
         True  -- すべての OSC 送信が成功 (ack mode では ack 受信)
@@ -217,7 +228,10 @@ async def _execute_cue(cue: ShowCue, show_id: int) -> bool:
 
     if cue.cue_type == "content" and cue.content_path:
         zones = cue.target_zones if cue.target_zones else "all"
-        load_res = osc.load_content(cue.content_path, zones)
+        if seat_id is not None:
+            load_res = osc.load_content_seat(seat_id, cue.content_path, zones, playback_mode)
+        else:
+            load_res = osc.load_content(cue.content_path, zones)
         if not load_res.ok:
             last_error = f"load_content failed: {load_res.error or 'no ack'}"
             logger.error("[Show %s cue %s] %s", show_id, cue.id, last_error)
@@ -337,7 +351,12 @@ async def _advance_to_cue(show: Show, target_cue: ShowCue, db: Session) -> bool:
         )
         db.rollback()
         return False
-    ok = await _execute_cue(target_cue, show.id)
+    ok = await _execute_cue(
+        target_cue,
+        show.id,
+        seat_id=show.projection_config_id,
+        playback_mode=show.playback_mode or "unified",
+    )
     if not ok:
         # _execute_cue 内で degraded フラグは既に立っている
         db.rollback()
@@ -363,8 +382,23 @@ def _schedule_auto_follow(show_id: int, cue: ShowCue) -> None:
 
 @router.post("", response_model=ShowResponse, status_code=201)
 def create_show(body: ShowCreate, db: Session = Depends(get_db)):
-    """ショー作成。storyboard_id を指定するとシーンからキューを自動生成"""
-    show = Show(name=body.name, storyboard_id=body.storyboard_id, status="standby")
+    """ショー作成。storyboard_id を指定するとシーンからキューを自動生成。
+    席 (projection_config_id) は body 指定 → storyboard 継承 の順で解決する。
+    """
+    # 席を解決: 明示指定 > storyboard の席 > None
+    projection_config_id = body.projection_config_id
+    if projection_config_id is None and body.storyboard_id:
+        _sb = db.query(Storyboard).filter(Storyboard.id == body.storyboard_id).first()
+        if _sb:
+            projection_config_id = _sb.projection_config_id
+
+    show = Show(
+        name=body.name,
+        storyboard_id=body.storyboard_id,
+        projection_config_id=projection_config_id,
+        playback_mode=body.playback_mode or "unified",
+        status="standby",
+    )
     db.add(show)
     db.flush()  # show.id を確定
 
