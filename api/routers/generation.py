@@ -55,6 +55,7 @@ from workers.content_compositor import (
     fit_zone,
     split_for_projectors,
     crop_to_table_band,
+    xfade_concat,
     LayoutSpec,
     CompositorError,
     TABLE_WIDTH,
@@ -68,6 +69,12 @@ from workers.content_compositor import (
     PJ_HEIGHT,
     PJ_COUNT,
     BLEND_OVERLAP,
+)
+from workers.long_video import (
+    plan_segments,
+    generate_long_video,
+    DEFAULT_CLIP_SECONDS,
+    DEFAULT_TRANSITION,
 )
 from workers.photo_animator import (
     PhotoAnimatorService,
@@ -533,6 +540,127 @@ def delete_table_spec(table_id: int, db: Session = Depends(get_db)):
         if next_default:
             next_default.is_default = True
             db.commit()
+
+
+# ─── 長尺動画 (Seedance 2.0 + Xfade) ──────────────────────────────
+
+def _safe_under_roots(path: str) -> str:
+    """path を touchdesigner/content または api/uploads 配下に限定して resolve。"""
+    from pathlib import Path as _Path
+    project_root = _Path(__file__).resolve().parent.parent.parent
+    allowed = [
+        (project_root / "touchdesigner" / "content").resolve(),
+        (project_root / "api" / "uploads").resolve(),
+    ]
+    try:
+        resolved = _Path(path).resolve(strict=False)
+    except (OSError, RuntimeError) as e:
+        raise HTTPException(400, f"path cannot be resolved: {e}")
+    if not any(
+        str(resolved).startswith(str(root) + os.sep) or resolved == root
+        for root in allowed
+    ):
+        raise HTTPException(400, f"path must be under {[str(r) for r in allowed]}")
+    return str(resolved)
+
+
+class XfadeAssembleRequest(BaseModel):
+    clip_paths: list[str]
+    output_path: str
+    transition_seconds: float = DEFAULT_TRANSITION
+    transition: str = "fade"
+
+
+@router.post("/long-video/assemble")
+async def assemble_long_video(req: XfadeAssembleRequest):
+    """既に生成済みのクリップ群を時間方向 xfade で 1 本に連結する。
+
+    Claude が MCP (Higgsfield Seedance 2.0) で各クリップを生成・保存し、その
+    パス列をこのエンドポイントに渡して長尺に組み立てる「Claude オーケストレーション」
+    経路の組立側。クリップは touchdesigner/content または api/uploads 配下に限定。
+    """
+    if not req.clip_paths:
+        raise HTTPException(400, "clip_paths is required")
+    safe_clips = [_safe_under_roots(p) for p in req.clip_paths]
+    safe_out = _safe_under_roots(req.output_path)
+    for p in safe_clips:
+        if not os.path.isfile(p):
+            raise HTTPException(400, f"clip not found: {p}")
+    try:
+        out = await xfade_concat(
+            safe_clips, safe_out,
+            transition_duration=req.transition_seconds,
+            transition=req.transition,
+        )
+    except CompositorError as e:
+        raise HTTPException(500, f"xfade assemble failed: {e}")
+    return {"ok": True, "output_path": out, "n_clips": len(safe_clips)}
+
+
+class LongVideoRequest(BaseModel):
+    prompt: str
+    total_seconds: int
+    output_path: str
+    clip_seconds: int = DEFAULT_CLIP_SECONDS
+    transition_seconds: float = DEFAULT_TRANSITION
+    transition: str = "fade"
+    strategy: str = "chain"          # chain (連続性最高) / parallel (最速)
+    resolution: str = "1080p"
+    aspect_ratio: str = "21:9"
+
+
+@router.post("/long-video/plan")
+def plan_long_video(req: LongVideoRequest):
+    """生成せずにセグメント分割計画 + 概算コストだけ返す (preflight)。"""
+    plan = plan_segments(
+        req.total_seconds, prompt=req.prompt,
+        clip_seconds=req.clip_seconds, transition_seconds=req.transition_seconds,
+    )
+    # Seedance 1080p std 8s ≈ 72 credits (Higgsfield)。クリップ尺で線形概算。
+    per_clip_credits = round(72 * (req.clip_seconds / 8))
+    return {
+        "n_segments": plan.n_segments,
+        "clip_seconds": req.clip_seconds,
+        "estimated_output_seconds": round(plan.estimated_output_seconds, 1),
+        "strategy": req.strategy,
+        "estimated_higgsfield_credits": per_clip_credits * plan.n_segments,
+        "segments": [{"index": s.index, "seconds": s.seconds} for s in plan.segments],
+    }
+
+
+@router.post("/long-video")
+async def create_long_video(req: LongVideoRequest):
+    """長尺動画をフル生成する (Seedance クリップ生成 → frame-chain → xfade)。
+
+    クリップ生成は SeedanceClipGenerator (fal もしくは higgsfield backend) を使う。
+    キー/クレジット未設定時は 400/500 を返す。プレビューは /long-video/plan を使う。
+    """
+    from workers.seedance_provider import SeedanceClipGenerator
+
+    safe_out = _safe_under_roots(req.output_path)
+    work_dir = os.path.join(os.path.dirname(safe_out), f".lv_work_{int(__import__('time').time())}")
+
+    plan = plan_segments(
+        req.total_seconds, prompt=req.prompt,
+        clip_seconds=req.clip_seconds, transition_seconds=req.transition_seconds,
+    )
+    generator = SeedanceClipGenerator(
+        resolution=req.resolution, aspect_ratio=req.aspect_ratio,
+    )
+    try:
+        out = await generate_long_video(
+            plan, generator, work_dir, safe_out,
+            strategy=req.strategy, transition=req.transition,
+        )
+    except (CompositorError, RuntimeError) as e:
+        raise HTTPException(500, f"long video generation failed: {e}")
+    return {
+        "ok": True,
+        "output_path": out,
+        "n_segments": plan.n_segments,
+        "estimated_output_seconds": round(plan.estimated_output_seconds, 1),
+        "strategy": req.strategy,
+    }
 
 
 @router.post("/prompt-preview")

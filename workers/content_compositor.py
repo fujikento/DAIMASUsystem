@@ -460,6 +460,163 @@ async def crop_to_table_band(
 
 
 # ====================================================================
+# 2c. 長尺アセンブリ: 複数クリップを時間方向 xfade で連結
+# ====================================================================
+
+async def extract_last_frame(input_path: str, output_image_path: str) -> str:
+    """動画の最終フレームを静止画として書き出す。
+
+    Seedance 2.0 の start_image に「前クリップの最後の絵」を渡して
+    フレーム連続性を作るために使う (長尺チェーンの核心)。
+    最終フレーム取得は -sseof -0.05 (末尾 0.05s) から 1 枚抜く。
+    """
+    _require_ffmpeg()
+    Path(output_image_path).parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-sseof", "-0.1",
+        "-i", input_path,
+        "-update", "1",
+        "-frames:v", "1",
+        "-q:v", "2",
+        output_image_path,
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0 or not Path(output_image_path).exists():
+        raise CompositorError(
+            f"extract_last_frame failed (rc={proc.returncode}): "
+            f"{stderr.decode(errors='replace')[-500:]}"
+        )
+    return output_image_path
+
+
+async def xfade_concat(
+    clip_paths: list[str],
+    output_path: str,
+    transition_duration: float = 0.7,
+    transition: str = "fade",
+    target_fps: int = 30,
+) -> str:
+    """複数クリップを時間方向 xfade (クロスフェード) で 1 本に連結する。
+
+    長尺動画の組み立て本体。各クリップは隣接クリップと transition_duration 秒だけ
+    重なってクロスフェードするため、出力長 = Σ(clip_i) - (N-1) * transition_duration。
+
+    ffmpeg の xfade フィルタは 2 入力を逐次連結する設計なので、N クリップは
+    N-1 個の xfade を直列にチェーンする (offset は累積尺で算出)。
+    全クリップは事前に同 fps / 同解像度である前提 (Seedance 出力は揃う)。
+    異なる場合に備えて各入力を target_fps に正規化する。
+
+    Args:
+        clip_paths: 連結するクリップのパス (時間順)。
+        output_path: 出力先 mp4。
+        transition_duration: クロスフェード長 (秒)。
+        transition: xfade のトランジション種別 (fade/wipeleft/dissolve 等)。
+        target_fps: 全入力を揃える fps。
+
+    Returns:
+        output_path
+    """
+    _require_ffmpeg()
+    if not clip_paths:
+        raise CompositorError("xfade_concat: clip_paths is empty")
+    if len(clip_paths) == 1:
+        # 1 本だけなら連結不要 — そのままコピー
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "ffmpeg", "-y", "-i", clip_paths[0],
+            "-c:v", "libx264", "-preset", "fast", "-crf", "16",
+            "-pix_fmt", "yuv420p", "-an", output_path,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise CompositorError(
+                f"xfade_concat (single copy) failed: {stderr.decode(errors='replace')[-300:]}"
+            )
+        return output_path
+
+    # 各クリップの尺を取得 (xfade offset 算出に必要)
+    durations: list[float] = []
+    for p in clip_paths:
+        info = await get_video_info(p)
+        if info["duration"] <= transition_duration:
+            raise CompositorError(
+                f"clip {p} is {info['duration']:.2f}s, shorter than transition "
+                f"{transition_duration}s — reduce transition_duration"
+            )
+        durations.append(info["duration"])
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # 入力を fps/pixfmt 正規化 (setpts で各入力のタイムスタンプを 0 起点に)
+    norm = []
+    for i in range(len(clip_paths)):
+        norm.append(
+            f"[{i}:v]fps={target_fps},format=yuv420p,setpts=PTS-STARTPTS[v{i}];"
+        )
+
+    # xfade を直列チェーン:
+    #   v0 ⊕ v1 (offset = dur0 - T) → x1
+    #   x1 ⊕ v2 (offset = dur0 + dur1 - 2T) → x2
+    #   ...
+    chain = ""
+    prev_label = "v0"
+    cumulative = 0.0
+    for i in range(1, len(clip_paths)):
+        cumulative += durations[i - 1] - transition_duration
+        out_label = f"x{i}" if i < len(clip_paths) - 1 else "vout"
+        chain += (
+            f"[{prev_label}][v{i}]xfade=transition={transition}:"
+            f"duration={transition_duration}:offset={cumulative:.3f}[{out_label}];"
+        )
+        prev_label = out_label
+
+    filter_complex = "".join(norm) + chain.rstrip(";")
+
+    cmd = ["ffmpeg", "-y"]
+    for p in clip_paths:
+        cmd += ["-i", p]
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "16",
+        "-pix_fmt", "yuv420p", "-an",
+        output_path,
+    ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise CompositorError(
+            f"xfade_concat ffmpeg failed (rc={proc.returncode}): "
+            f"{stderr.decode(errors='replace')[-600:]}"
+        )
+
+    out_info = await get_video_info(output_path)
+    expected = sum(durations) - (len(clip_paths) - 1) * transition_duration
+    # 許容誤差 ±0.5s (エンコーダの端数 + fps 量子化)
+    if abs(out_info["duration"] - expected) > 0.5:
+        print(
+            f"[Xfade] WARNING: duration {out_info['duration']:.2f}s "
+            f"differs from expected {expected:.2f}s"
+        )
+    print(
+        f"[Xfade] {len(clip_paths)} clips → {output_path} "
+        f"({out_info['width']}x{out_info['height']}, {out_info['duration']:.1f}s, "
+        f"transition={transition} {transition_duration}s)"
+    )
+    return output_path
+
+
+# ====================================================================
 # 3. プロジェクター分割: 全体映像 → PJ1/PJ2/PJ3
 # ====================================================================
 
