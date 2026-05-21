@@ -163,9 +163,18 @@ class ImageGenerationJob:
     # gpt-image-2 image-to-image (style chain) 用: 1..16 枚の参照画像パス。
     # 指定があれば client.images.edit() で前シーンの絵をベースに次シーンを生成する。
     reference_image_paths: Optional[list[str]] = None
+    # 席 (テーブル) ごとの出力解像度。未指定ならモジュール定数 (5520x1200/4zone)。
+    # ProjectionConfig から storyboard 経由で注入される (Phase B)。
+    full_width: int = TABLE_FULL_WIDTH
+    full_height: int = TABLE_FULL_HEIGHT
+    zone_count: int = TABLE_ZONE_COUNT
     created_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
     preview_only: bool = True
+
+    @property
+    def zone_width(self) -> int:
+        return self.full_width // max(self.zone_count, 1)
 
 
 def _fit_to_canvas(img: "_PILImage.Image", target_w: int, target_h: int) -> "_PILImage.Image":
@@ -321,6 +330,9 @@ class ImageGeneratorService:
         style_seed: Optional[int] = None,
         preview_only: bool = True,
         reference_image_paths: Optional[list[str]] = None,
+        full_width: Optional[int] = None,
+        full_height: Optional[int] = None,
+        zone_count: Optional[int] = None,
     ) -> ImageGenerationJob:
         """画像生成ジョブを作成"""
         self._job_counter += 1
@@ -346,6 +358,9 @@ class ImageGeneratorService:
             style_seed=style_seed,
             preview_only=preview_only,
             reference_image_paths=reference_image_paths,
+            full_width=full_width if full_width is not None else TABLE_FULL_WIDTH,
+            full_height=full_height if full_height is not None else TABLE_FULL_HEIGHT,
+            zone_count=zone_count if zone_count is not None else TABLE_ZONE_COUNT,
         )
         self.jobs[job_id] = job
         return job
@@ -563,6 +578,9 @@ class ImageGeneratorService:
         aspect_ratio: str,
         projection_mode: str = "unified",
         target_zones: Optional[str] = None,
+        full_width: int = TABLE_FULL_WIDTH,
+        full_height: int = TABLE_FULL_HEIGHT,
+        zone_width: int = TABLE_ZONE_WIDTH,
     ) -> None:
         """Post-process a PIL Image object to exact table dimensions and save as JPEG.
 
@@ -593,60 +611,63 @@ class ImageGeneratorService:
             return
 
         if projection_mode == "custom" and target_zones:
+            n_zones = max(full_width // max(zone_width, 1), 1)
             zones = sorted(
                 [int(z.strip()) for z in target_zones.split(",") if z.strip().isdigit()]
             )
             if not zones:
-                zones = [1, 2, 3, 4]
+                zones = list(range(1, n_zones + 1))
 
-            content_width = TABLE_ZONE_WIDTH * len(zones)
-            content_height = TABLE_FULL_HEIGHT
+            content_width = zone_width * len(zones)
+            content_height = full_height
 
             content_img = _fit_to_canvas(img, content_width, content_height)
 
-            canvas = _PILImage.new("RGB", (TABLE_FULL_WIDTH, TABLE_FULL_HEIGHT), (0, 0, 0))
+            canvas = _PILImage.new("RGB", (full_width, full_height), (0, 0, 0))
             for i, zone_num in enumerate(zones):
-                src_x = i * TABLE_ZONE_WIDTH
+                src_x = i * zone_width
                 chunk = content_img.crop(
-                    (src_x, 0, src_x + TABLE_ZONE_WIDTH, content_height)
+                    (src_x, 0, src_x + zone_width, content_height)
                 )
-                dest_x = (zone_num - 1) * TABLE_ZONE_WIDTH
+                dest_x = (zone_num - 1) * zone_width
                 canvas.paste(chunk, (dest_x, 0))
 
             canvas.save(output_path, format="JPEG", quality=85)
             print(
                 f"[ImageGen] Post-processed custom zones {zones} on "
-                f"{TABLE_FULL_WIDTH}x{TABLE_FULL_HEIGHT} black canvas: {output_path}"
+                f"{full_width}x{full_height} black canvas: {output_path}"
             )
 
         elif projection_mode == "zone":
             # Opt-3: _fit_to_canvas returns exact target size; save directly
-            fitted = _fit_to_canvas(img, TABLE_ZONE_WIDTH, TABLE_FULL_HEIGHT)
+            fitted = _fit_to_canvas(img, zone_width, full_height)
             fitted.save(output_path, format="JPEG", quality=85)
             print(
-                f"[ImageGen] Post-processed zone {TABLE_ZONE_WIDTH}x{TABLE_FULL_HEIGHT}: {output_path}"
+                f"[ImageGen] Post-processed zone {zone_width}x{full_height}: {output_path}"
             )
 
         elif projection_mode == "seat":
-            seat_img = _fit_to_canvas(img, TABLE_SEAT_WIDTH, TABLE_FULL_HEIGHT)
-            canvas = _PILImage.new("RGB", (TABLE_FULL_WIDTH, TABLE_FULL_HEIGHT), (0, 0, 0))
-            for i in range(TABLE_SEAT_COUNT):
-                canvas.paste(seat_img, (i * TABLE_SEAT_WIDTH, 0))
+            seat_img = _fit_to_canvas(img, TABLE_SEAT_WIDTH, full_height)
+            canvas = _PILImage.new("RGB", (full_width, full_height), (0, 0, 0))
+            seat_w = max(TABLE_SEAT_WIDTH, 1)
+            n_seats = max(full_width // seat_w, 1)
+            for i in range(n_seats):
+                canvas.paste(seat_img, (i * seat_w, 0))
             canvas.save(output_path, format="JPEG", quality=85)
             print(
-                f"[ImageGen] Post-processed seat 690x1200 tiled x8 on 5520x1200: {output_path}"
+                f"[ImageGen] Post-processed seat {seat_w}x{full_height} tiled x{n_seats} on {full_width}x{full_height}: {output_path}"
             )
 
         else:
-            # Opt-3: Unified (default): crop-to-fill 5520x1200, save directly
-            fitted = _fit_to_canvas(img, TABLE_FULL_WIDTH, TABLE_FULL_HEIGHT)
+            # Opt-3: Unified (default): crop-to-fill full_width x full_height, save directly
+            fitted = _fit_to_canvas(img, full_width, full_height)
             print(
-                f"[ImageGen] Post-process: {orig_w}x{orig_h} -> {TABLE_FULL_WIDTH}x{TABLE_FULL_HEIGHT} "
-                f"(keeping {min(100, round(TABLE_FULL_HEIGHT / orig_h * orig_w / TABLE_FULL_WIDTH * 100))}% of original content)"
+                f"[ImageGen] Post-process: {orig_w}x{orig_h} -> {full_width}x{full_height} "
+                f"(keeping {min(100, round(full_height / orig_h * orig_w / full_width * 100))}% of original content)"
             )
             fitted.save(output_path, format="JPEG", quality=85)
             print(
-                f"[ImageGen] Post-processed unified {TABLE_FULL_WIDTH}x{TABLE_FULL_HEIGHT}: {output_path}"
+                f"[ImageGen] Post-processed unified {full_width}x{full_height}: {output_path}"
             )
 
     def _postprocess_image(
@@ -655,6 +676,9 @@ class ImageGeneratorService:
         aspect_ratio: str,
         projection_mode: str = "unified",
         target_zones: Optional[str] = None,
+        full_width: int = TABLE_FULL_WIDTH,
+        full_height: int = TABLE_FULL_HEIGHT,
+        zone_width: int = TABLE_ZONE_WIDTH,
     ) -> None:
         """生成画像を物理テーブル寸法に合わせてブラックキャンバス方式で変換する。
 
@@ -681,26 +705,29 @@ class ImageGeneratorService:
             print(f"[ImageGen] Cannot open image for post-processing: {e}")
             return
 
-        self._postprocess_from_pil(img, image_path, aspect_ratio, projection_mode, target_zones)
+        self._postprocess_from_pil(
+            img, image_path, aspect_ratio, projection_mode, target_zones,
+            full_width, full_height, zone_width,
+        )
 
     def _save_metadata(self, job: ImageGenerationJob, model: str) -> None:
         """メタデータJSONをJPGの隣に保存"""
         output = Path(job.output_path)
         meta_path = output.with_suffix(".json")
 
-        # Resolve target dimensions for this job
+        # Resolve target dimensions for this job (席ごとの実解像度を反映)
         if job.projection_mode == "unified" or job.aspect_ratio == "21:9":
-            target_w, target_h = TABLE_FULL_WIDTH, TABLE_FULL_HEIGHT
+            target_w, target_h = job.full_width, job.full_height
         elif job.projection_mode == "zone":
-            target_w, target_h = TABLE_ZONE_WIDTH, TABLE_FULL_HEIGHT
+            target_w, target_h = job.zone_width, job.full_height
         elif job.projection_mode == "custom" and job.target_zones:
             zone_count = len([z for z in job.target_zones.split(",") if z.strip()])
-            target_w = TABLE_ZONE_WIDTH * zone_count
-            target_h = TABLE_FULL_HEIGHT
+            target_w = job.zone_width * zone_count
+            target_h = job.full_height
         elif job.projection_mode == "seat":
-            target_w, target_h = TABLE_SEAT_WIDTH, TABLE_FULL_HEIGHT
+            target_w, target_h = TABLE_SEAT_WIDTH, job.full_height
         else:
-            target_w, target_h = TABLE_FULL_WIDTH, TABLE_FULL_HEIGHT
+            target_w, target_h = job.full_width, job.full_height
 
         metadata = {
             "job_id": job.job_id,
@@ -984,6 +1011,9 @@ class ImageGeneratorService:
                 job.aspect_ratio,
                 job.projection_mode,
                 job.target_zones,
+                job.full_width,
+                job.full_height,
+                job.zone_width,
             ),
         )
         metadata_future = loop.run_in_executor(
@@ -1126,6 +1156,9 @@ class ImageGeneratorService:
                 job.aspect_ratio,
                 job.projection_mode,
                 job.target_zones,
+                job.full_width,
+                job.full_height,
+                job.zone_width,
             ),
         )
         metadata_future = loop.run_in_executor(
@@ -1228,6 +1261,9 @@ class ImageGeneratorService:
                 job.aspect_ratio,
                 job.projection_mode,
                 job.target_zones,
+                job.full_width,
+                job.full_height,
+                job.zone_width,
             ),
         )
         metadata_future = loop.run_in_executor(
@@ -1364,6 +1400,9 @@ class ImageGeneratorService:
                 job.aspect_ratio,
                 job.projection_mode,
                 job.target_zones,
+                job.full_width,
+                job.full_height,
+                job.zone_width,
             ),
         )
         metadata_future = loop.run_in_executor(
@@ -1563,6 +1602,9 @@ class ImageGeneratorService:
                 job.aspect_ratio,
                 job.projection_mode,
                 job.target_zones,
+                job.full_width,
+                job.full_height,
+                job.zone_width,
             ),
         )
         metadata_future = loop.run_in_executor(
