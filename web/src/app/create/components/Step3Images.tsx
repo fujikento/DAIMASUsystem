@@ -63,7 +63,10 @@ export default function Step3Images({
     (s) => s.image_status === "complete" || s.image_status === "approved"
   );
   const inProgress = storyboard.scenes.some(
-    (s) => s.image_status === "pending" || s.image_status === "processing"
+    (s) =>
+      s.image_status === "pending" ||
+      s.image_status === "processing" ||
+      s.image_status === "generating"
   );
 
   // ─ Auto-poll when generation is in progress ─
@@ -72,7 +75,10 @@ export default function Step3Images({
     try {
       const data = await fetchScenesStatus(storyboard.id);
       const stillInFlight = data.scenes.some(
-        (s) => s.image_status === "pending" || s.image_status === "processing"
+        (s) =>
+          s.image_status === "pending" ||
+          s.image_status === "processing" ||
+          s.image_status === "generating"
       );
       await onReload();
       if (!stillInFlight) setPolling(false);
@@ -232,7 +238,7 @@ export default function Step3Images({
                       />
                     ) : (
                       <div className="absolute inset-0 flex items-center justify-center">
-                        {status === "pending" || status === "processing" || isRegen ? (
+                        {status === "pending" || status === "processing" || status === "generating" || isRegen ? (
                           <Loader2 size={24} className="animate-spin text-neutral-600" />
                         ) : status === "failed" ? (
                           <AlertTriangle size={24} className="text-red-400/60" />

@@ -227,8 +227,8 @@ export default function NewWizardStep1() {
           />
           {selectedTable && (
             <p className="text-[11px] text-neutral-500">
-              席「<span className="text-neutral-300">{selectedTable.name}</span>」用に作成。
-              動画解像度は {selectedTable.full_width}×{selectedTable.full_height}px に最適化。
+              席「<span className="text-neutral-300">{selectedTable.name}</span>」
+              (投影 {selectedTable.full_width}×{selectedTable.full_height}px) に紐付けて作成します。
             </p>
           )}
         </div>

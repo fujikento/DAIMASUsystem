@@ -69,7 +69,10 @@ export default function Step4Video({ storyboard, onReload, onBack }: Props) {
   const allDone = storyboard.scenes.every((s) => s.video_status === "complete");
   const someDone = storyboard.scenes.some((s) => s.video_status === "complete");
   const inProgress = storyboard.scenes.some(
-    (s) => s.video_status === "pending" || s.video_status === "processing"
+    (s) =>
+      s.video_status === "pending" ||
+      s.video_status === "processing" ||
+      s.video_status === "generating"
   );
 
   const poll = useCallback(async () => {
@@ -77,7 +80,10 @@ export default function Step4Video({ storyboard, onReload, onBack }: Props) {
     try {
       const data = await fetchScenesStatus(storyboard.id);
       const stillInFlight = data.scenes.some(
-        (s) => s.video_status === "pending" || s.video_status === "processing"
+        (s) =>
+          s.video_status === "pending" ||
+          s.video_status === "processing" ||
+          s.video_status === "generating"
       );
       await onReload();
       if (!stillInFlight) setPolling(false);
@@ -328,6 +334,7 @@ export default function Step4Video({ storyboard, onReload, onBack }: Props) {
                         <div className="absolute inset-0 flex items-center justify-center">
                           {scene.video_status === "pending" ||
                           scene.video_status === "processing" ||
+                          scene.video_status === "generating" ||
                           isRegen ? (
                             <Loader2 size={28} className="animate-spin text-white/70" />
                           ) : scene.video_status === "failed" ? (

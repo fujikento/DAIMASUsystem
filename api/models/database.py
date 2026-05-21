@@ -101,12 +101,6 @@ def init_db():
         _add_column_if_missing(conn, "storyboard_scenes", "mood", "VARCHAR")
         _add_column_if_missing(conn, "storyboard_scenes", "camera_angle", "VARCHAR")
 
-        # storyboards: style_reference / style_seed for fal.ai consistency
-        _add_column_if_missing(conn, "storyboards", "style_reference_path", "TEXT")
-        _add_column_if_missing(conn, "storyboards", "style_seed", "INTEGER")
-        # storyboards: 席 (テーブル) との紐付け
-        _add_column_if_missing(conn, "storyboards", "projection_config_id", "INTEGER")
-
         # projection_config: multi-row 拡張 — name / is_default / note / created_at / seats_json
         _add_column_if_missing(conn, "projection_config", "name", "VARCHAR DEFAULT 'メインテーブル'")
         _add_column_if_missing(conn, "projection_config", "is_default", "BOOLEAN DEFAULT 0")
@@ -164,6 +158,14 @@ def init_db():
                     conn.execute(text("DROP TABLE _storyboards_old"))
         except Exception as e:
             print(f"[DB Migration] storyboards nullable migration: {e}")
+
+        # storyboards: 追加カラムは nullable 再作成 (上) の後に付与する。
+        # 順序が逆だと、再作成 CREATE TABLE がこれらの列を含まないため消えてしまう
+        # (codex-gate 指摘 P1, 2026-05-22)。_add_column_if_missing は冪等なので
+        # 再作成が走らなかった場合も安全。
+        _add_column_if_missing(conn, "storyboards", "style_reference_path", "TEXT")
+        _add_column_if_missing(conn, "storyboards", "style_seed", "INTEGER")
+        _add_column_if_missing(conn, "storyboards", "projection_config_id", "INTEGER")
 
         conn.commit()
 

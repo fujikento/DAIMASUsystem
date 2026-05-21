@@ -407,8 +407,15 @@ def _apply_update(config: ProjectionConfig, update_data: dict) -> None:
 
 
 def _ensure_default_config(db: Session) -> ProjectionConfig:
-    """1 行も無ければデフォルトを作る。default 行は最古の 1 行を採用。"""
-    config = db.query(ProjectionConfig).order_by(ProjectionConfig.id).first()
+    """デフォルト席を返す。is_default 行を優先、無ければ最古行、1 行も無ければ作成。
+    (codex-gate 指摘 P2: 後方互換 API が default でなく最古行を返していた)
+    """
+    config = (
+        db.query(ProjectionConfig)
+        .filter(ProjectionConfig.is_default == True)  # noqa: E712
+        .first()
+        or db.query(ProjectionConfig).order_by(ProjectionConfig.id).first()
+    )
     if not config:
         config = ProjectionConfig(
             name="メインテーブル",
